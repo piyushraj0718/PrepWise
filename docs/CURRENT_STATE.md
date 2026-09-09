@@ -42,14 +42,47 @@ Last reviewed: 2026-09-09
 - Embedding vectors and dimensions are validated before a single persistence transaction; provider and persistence failures do not create partial embedding rows.
 - Added deterministic fake-provider tests for generation, metadata, idempotency, rebuild, validation, and failure paths.
 
+## Completed in Milestone 2C: Vector Similarity Retrieval
+
+- Added `POST /search` for embedding a query and returning ranked chunk results.
+- Retrieval uses the existing embedding provider and JSON-stored vectors with deterministic cosine similarity.
+- Search supports all processed documents or an optional `document_id` filter, includes similarity scores, and preserves chunk text, order, and page metadata.
+- Added validation for empty queries, bounded `top_k`, invalid document IDs, malformed or missing embeddings, zero-magnitude vectors, and provider failures.
+- Added deterministic fake-provider tests for ranking, filtering, empty results, response structure, validation, and failure handling.
+
+## Completed in Milestone 2D: Hybrid BM25 + Dense Retrieval
+
+- Extended `POST /search` to combine the existing dense cosine ranking with local BM25 ranking over persisted chunk text.
+- Uses reciprocal-rank fusion with a constant of 60, positive lexical matches only, and deterministic score/metadata tie-breakers.
+- Search preserves chunk IDs, document IDs, text, page metadata, dense similarity, BM25 score, and hybrid score.
+- Supports query, bounded `top_k`, optional document filtering, lexical-only matches, and explicit handling for missing documents, malformed embeddings, empty queries, and provider failures.
+- Added deterministic tests for BM25 ranking, dense ranking, hybrid promotion, filtering, top-k, empty results, malformed vectors, validation, and provider failure.
+
+## Completed in Milestone 2E: Retrieval Reranking
+
+- Added a replaceable reranker provider protocol and local Sentence Transformers cross-encoder adapter.
+- Extended `POST /search` with optional `candidate_k`; hybrid retrieval supplies the candidate set and reranking returns the final `top_k`.
+- The default `cross-encoder/ms-marco-MiniLM-L-6-v2` model loads lazily and is never required by the deterministic test suite.
+- Search results preserve dense, BM25, and hybrid scores plus chunk metadata and add `reranker_score` and `final_rank`.
+- Added deterministic fake-reranker tests for reorder behavior, score preservation, candidate limits, filtering, empty candidates, malformed data, validation, and provider failures.
+
+## Completed in Milestone 2F: Grounded RAG
+
+- Added a replaceable `LLMProvider` abstraction and a Gemini REST provider using environment-backed API configuration.
+- Added centralized grounding instructions and `POST /ask`, which composes hybrid retrieval, reranking, context selection, and answer generation.
+- LLM output is validated and citations are mapped only from retrieved chunk IDs, preserving source text, document/chunk metadata, and retrieval/reranking scores.
+- Added deterministic no-context fallback and explicit handling for empty queries, missing documents, missing API configuration, provider failures, timeouts, and malformed responses.
+- Added deterministic fake-LLM tests for grounded answers, citation mapping, document filtering, no context, failures, malformed output, and full retrieval-to-generation integration.
+- Added optional manual smoke path at `scripts/smoke_rag.py`; it is not collected by pytest.
+
 ## Explicitly not implemented
 
 - PrepWise product features or user workflows.
 - AI prompts, hosted model calls, or API keys.
-- OCR, scanned-document/image processing, RAG, LLM calls, question generation, adaptive learning, authentication, queues, frontend, Docker, deployment, migrations, or CI.
+- OCR, scanned-document/image processing, question generation, adaptive learning, authentication, queues, frontend, Docker, deployment, migrations, or CI.
 
 ## Known constraints and next inputs
 
 To run locally: create a PostgreSQL database, copy `.env.example` to `.env` and set `DATABASE_URL`, install `requirements.txt`, then run `uvicorn app.main:app --reload`. The first use of the default embedding provider downloads `all-MiniLM-L6-v2` through `sentence-transformers`; subsequent uses use the local cache. Tables are created at application startup for this foundation milestone.
 
-The next milestone should define a separate approved retrieval scope. Similarity search, reranking, RAG, and other retrieval behavior are not implemented here.
+The next milestone should define a separate approved scope for product learning workflows. Question generation, quizzes, adaptive learning, and other M3 features are not implemented here.

@@ -2,7 +2,12 @@ import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
-from app.api.dependencies import get_document_service, get_embedding_service
+from app.api.dependencies import (
+    get_document_service,
+    get_embedding_service,
+    get_rag_service,
+    get_search_service,
+)
 from app.schemas.documents import (
     DocumentChunkGenerationResponse,
     DocumentChunksResponse,
@@ -12,6 +17,12 @@ from app.schemas.documents import (
     EmbeddingGenerationResponse,
     EmbeddingStatusItem,
     EmbeddingStatusResponse,
+    AskRequest,
+    AskResponse,
+    SourceCitationItem,
+    SearchRequest,
+    SearchResponse,
+    SearchResultItem,
 )
 from app.services.documents import (
     DocumentNotFoundError,
@@ -27,6 +38,14 @@ from app.services.embeddings import (
     EmbeddingService,
     InvalidEmbeddingError,
 )
+from app.services.retrieval import InvalidRetrievalQuery, RetrievalProviderError, RetrievalService
+from app.services.reranking import (
+    InvalidRerankingQuery,
+    RerankerProviderError,
+    RerankingService,
+)
+from app.services.rag import InvalidRAGQuery, RAGError, RAGService
+from app.ai.llm import LLMConfigurationError, LLMProviderError, LLMResponseError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -213,5 +232,94 @@ def get_document_embedding_status(
                 embedded_chunk_count=len(rows),
             )
             for model_name, rows in grouped.items()
+        ],
+    )
+
+
+@router.post("/search", response_model=SearchResponse)
+def search_documents(
+    request: SearchRequest,
+    service: RerankingService = Depends(get_search_service),
+) -> SearchResponse:
+    try:
+        results = service.search(
+            request.query,
+            top_k=request.top_k,
+            candidate_k=request.candidate_k,
+            document_id=str(
+                request.document_id) if request.document_id else None,
+        )
+    except RetrievalProviderError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    except DocumentNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except InvalidRetrievalQuery as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except RerankerProviderError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    except InvalidRerankingQuery as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+    return SearchResponse(
+        query=request.query,
+        top_k=request.top_k,
+        candidate_k=request.candidate_k,
+        results=[SearchResultItem.model_validate(
+            result) for result in results],
+    )
+
+
+@router.post("/ask", response_model=AskResponse)
+def ask_question(
+    request: AskRequest,
+    service: RAGService = Depends(get_rag_service),
+) -> AskResponse:
+    try:
+        result = service.ask(
+            request.query,
+            top_k=request.top_k,
+            candidate_k=request.candidate_k,
+            document_id=str(
+                request.document_id) if request.document_id else None,
+        )
+    except (InvalidRAGQuery, InvalidRerankingQuery, InvalidRetrievalQuery) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except DocumentNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (LLMConfigurationError, LLMProviderError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    except LLMResponseError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    except RAGError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+
+    return AskResponse(
+        query=request.query,
+        answer=result.answer,
+        retrieved_chunk_ids=result.retrieved_chunk_ids,
+        citations=[
+            SourceCitationItem(
+                chunk_id=citation.chunk_id,
+                document_id=citation.document_id,
+                chunk_index=citation.chunk_index,
+                page_number=citation.page_number,
+                chunk_text=citation.chunk_text,
+                similarity=citation.similarity,
+                bm25_score=citation.bm25_score,
+                hybrid_score=citation.hybrid_score,
+                reranker_score=citation.reranker_score,
+            )
+            for citation in result.citations
         ],
     )

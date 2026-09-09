@@ -77,6 +77,36 @@ class DocumentRepository:
         ).scalars().all()
         return list(rows)
 
+    def get_retrieval_candidates(
+        self, model_name: str, document_id: str | None = None
+    ) -> list[tuple[DocumentChunk, DocumentEmbedding]]:
+        statement = (
+            select(DocumentChunk, DocumentEmbedding)
+            .join(DocumentEmbedding, DocumentEmbedding.chunk_id == DocumentChunk.id)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(Document.status == "processed")
+            .where(DocumentEmbedding.model_name == model_name)
+            .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+        )
+        if document_id is not None:
+            statement = statement.where(
+                DocumentChunk.document_id == document_id)
+        return [(chunk, embedding) for chunk, embedding in self.db.execute(statement).all()]
+
+    def get_lexical_candidates(
+        self, document_id: str | None = None
+    ) -> list[DocumentChunk]:
+        statement = (
+            select(DocumentChunk)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(Document.status == "processed")
+            .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+        )
+        if document_id is not None:
+            statement = statement.where(
+                DocumentChunk.document_id == document_id)
+        return list(self.db.execute(statement).scalars().all())
+
     def get_embeddings_for_chunks(
         self, chunk_ids: list[str], model_name: str
     ) -> list[DocumentEmbedding]:

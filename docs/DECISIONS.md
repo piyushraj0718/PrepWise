@@ -171,3 +171,87 @@ The provider boundary keeps the service testable with deterministic fakes, while
 ### Consequences
 
 Installing `sentence-transformers` and the first-use model download are local development prerequisites for the default provider. Vector similarity search, indexing, retrieval, and RAG remain out of scope.
+
+## ADR-009: Implement vector retrieval over existing JSON embeddings
+
+- Status: Accepted
+- Date: 2026-09-09
+
+### Context
+
+Milestone 2C needs query-time retrieval while the project already stores validated embedding vectors as JSON and has no configured vector extension or vector database.
+
+### Decision
+
+Add a retrieval service that uses the existing embedding provider for query vectors, loads processed-document candidates through the document repository, calculates cosine similarity in Python, and returns deterministic top-k chunk results. Support an optional document ID filter and expose the service through `POST /search`.
+
+### Rationale
+
+This establishes a small, testable retrieval boundary without adding pgvector, a new database, or a paid model API. Dimension mismatches, malformed vectors, and zero-magnitude vectors are ignored for stored candidates, while provider failures and invalid queries have explicit errors.
+
+### Consequences
+
+Candidate retrieval is a linear scan and is appropriate for this milestone's scope, but it will need an indexed strategy when corpus size requires it. Hybrid BM25 retrieval, reranking, and RAG remain separate future milestones.
+
+## ADR-010: Combine local BM25 and dense rankings with reciprocal-rank fusion
+
+- Status: Accepted
+- Date: 2026-09-09
+
+### Context
+
+Milestone 2D needs lexical retrieval in addition to M2C dense retrieval, while keeping the implementation local, deterministic, and free of an external search service.
+
+### Decision
+
+Reuse `RetrievalService` and the existing query embedding provider. Scan processed chunks for BM25 scores using case-insensitive Unicode word tokens, retain only positive lexical matches, and combine dense and lexical ranks with reciprocal-rank fusion using `1 / (60 + rank)`. Return the existing dense similarity alongside BM25 and hybrid scores, with stable metadata tie-breakers.
+
+### Rationale
+
+Reciprocal-rank fusion combines rankings without pretending cosine and BM25 raw scores are directly comparable. A local scan keeps the milestone small and testable while supporting lexical-only matches and skipping malformed stored vectors for dense scoring.
+
+### Consequences
+
+Search remains linear in the number of processed chunks and does not maintain a persistent lexical index. Larger corpora may require a dedicated indexed strategy in a separately approved milestone. Reranking, RAG, and LLM calls remain out of scope.
+
+## ADR-011: Add a lazy local cross-encoder reranking stage
+
+- Status: Accepted
+- Date: 2026-09-09
+
+### Context
+
+M2E needs a semantic reranking stage after M2D hybrid retrieval without changing the existing dense/BM25 pipeline, calling an LLM API, or requiring a remote reranking service.
+
+### Decision
+
+Add a `RerankerProvider` protocol and a `RerankingService` that accepts the original query and hybrid candidate chunks. The default adapter uses Sentence Transformers `cross-encoder/ms-marco-MiniLM-L-6-v2`, configured centrally and loaded only when scoring is first requested. `candidate_k` is validated and applied before reranking; only final `top_k` results are returned.
+
+### Rationale
+
+A cross-encoder scores each query/chunk pair directly and is a better semantic relevance signal than comparing independent embeddings. The provider boundary keeps tests deterministic with fakes and permits changing models later. Lazy loading avoids model work during import and keeps tests independent of model availability.
+
+### Consequences
+
+Reranking adds local model latency and remains bounded by `candidate_k`; the default model may need a first-use download and local resources. No RAG generation, LLM call, or external reranking service is introduced.
+
+## ADR-012: Add grounded RAG with a replaceable Gemini provider
+
+- Status: Accepted
+- Date: 2026-09-09
+
+### Context
+
+M2F needs the first question-answering vertical slice while keeping retrieval, reranking, and generation separate. The project had no previously selected hosted LLM provider, so one provider must be chosen without coupling the application to it.
+
+### Decision
+
+Add a `LLMProvider` port and a `RAGService` that consumes existing reranked chunks. Use Gemini's REST `generateContent` API as the first real adapter, configured by `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, and `GEMINI_TIMEOUT_SECONDS`. Centralize grounding instructions and request structured JSON containing an answer and supplied chunk IDs. Validate IDs against retrieved candidates and build final citations from application-owned metadata.
+
+### Rationale
+
+Gemini provides a straightforward structured-generation API and can be replaced behind the provider port. Environment-only credentials avoid secrets in source control. Application-side citation mapping prevents fabricated sources, while fake providers keep normal tests deterministic and offline.
+
+### Consequences
+
+Real `/ask` requests require a configured Gemini API key, network access, and model availability. The optional smoke script may incur provider usage and latency. No question generation, quiz generation, adaptive learning, agents, or evaluation framework is included.
