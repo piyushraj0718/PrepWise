@@ -68,16 +68,25 @@ from app.services.assessment_generation import (
 from app.repositories.assessments import AssessmentRepository
 from app.repositories.learner import DuplicateSubmissionError, LearnerRepository
 from app.ai.llm import LLMConfigurationError, LLMProviderError, LLMResponseError
-from app.domain.assessment import score_mcq_answer
+from app.domain.assessment import (
+    detect_weak_areas,
+    score_mcq_answer,
+    WEAK_TOPIC_MIN_ATTEMPTS,
+    WEAK_TOPIC_ACCURACY_THRESHOLD,
+)
 from app.schemas.learner import (
     AnswerSubmissionRequest,
     AnswerSubmissionResponse,
+    AreaPerformanceResponse,
+    LearnerPerformanceResponse,
     LearnerQuestionResponse,
     LearnerQuestionOptionResponse,
+    LearnerWeakTopicsResponse,
     QuizSessionCreateRequest,
     QuizSessionQuestionsResponse,
     QuizSessionResponse,
     SessionResultResponse,
+    WeakAreaResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -722,5 +731,103 @@ def complete_quiz_session(
         score_percent=round(score_percent, 2),
         submissions=[
             AnswerSubmissionResponse.model_validate(s) for s in submissions
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# M4C – Learner performance and weak-topic detection
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/learners/{learner_id}/performance",
+    response_model=LearnerPerformanceResponse,
+)
+def get_learner_performance(
+    learner_id: str,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+) -> LearnerPerformanceResponse:
+    """Return overall, per-topic, and per-skill performance for a learner.
+
+    Aggregates all submitted answers for the learner across all sessions.
+    Returns empty aggregates (zero counts) when no submissions exist.
+    """
+    submissions = learner_repo.get_all_submissions_for_learner(learner_id)
+    total_attempts = len(submissions)
+    total_correct = sum(1 for s in submissions if s.is_correct)
+
+    from app.domain.assessment import compute_accuracy
+    overall_accuracy = compute_accuracy(total_attempts, total_correct)
+
+    topic_perfs = learner_repo.get_topic_performance_for_learner(learner_id)
+    skill_perfs = learner_repo.get_skill_performance_for_learner(learner_id)
+
+    return LearnerPerformanceResponse(
+        learner_id=learner_id,
+        total_attempts=total_attempts,
+        total_correct=total_correct,
+        overall_accuracy=overall_accuracy,
+        by_topic=[
+            AreaPerformanceResponse(
+                label=p.label,
+                attempts=p.attempts,
+                correct=p.correct,
+                accuracy=p.accuracy,
+            )
+            for p in topic_perfs
+        ],
+        by_skill=[
+            AreaPerformanceResponse(
+                label=p.label,
+                attempts=p.attempts,
+                correct=p.correct,
+                accuracy=p.accuracy,
+            )
+            for p in skill_perfs
+        ],
+    )
+
+
+@router.get(
+    "/learners/{learner_id}/weak-topics",
+    response_model=LearnerWeakTopicsResponse,
+)
+def get_learner_weak_topics(
+    learner_id: str,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+) -> LearnerWeakTopicsResponse:
+    """Return weak topics and skills for a learner using deterministic policy.
+
+    A topic or skill is weak when it has at least WEAK_TOPIC_MIN_ATTEMPTS
+    attempts and accuracy <= WEAK_TOPIC_ACCURACY_THRESHOLD.
+    Returns empty lists when there are no weak areas or no submissions.
+    """
+    topic_perfs = learner_repo.get_topic_performance_for_learner(learner_id)
+    skill_perfs = learner_repo.get_skill_performance_for_learner(learner_id)
+
+    weak_topics = detect_weak_areas(topic_perfs)
+    weak_skills = detect_weak_areas(skill_perfs)
+
+    return LearnerWeakTopicsResponse(
+        learner_id=learner_id,
+        min_attempts_threshold=WEAK_TOPIC_MIN_ATTEMPTS,
+        accuracy_threshold=WEAK_TOPIC_ACCURACY_THRESHOLD,
+        weak_topics=[
+            WeakAreaResponse(
+                label=w.label,
+                attempts=w.attempts,
+                correct=w.correct,
+                accuracy=w.accuracy,
+            )
+            for w in weak_topics
+        ],
+        weak_skills=[
+            WeakAreaResponse(
+                label=w.label,
+                attempts=w.attempts,
+                correct=w.correct,
+                accuracy=w.accuracy,
+            )
+            for w in weak_skills
         ],
     )

@@ -425,3 +425,26 @@ A domain function has no I/O dependencies, is trivially testable, and prevents t
 ### Consequences
 
 Changing an already-submitted answer is not supported; the 409 response makes this visible to callers. The `score_percent` is computed from submitted questions only, so an incomplete session will show 0% for unanswered questions if completed early. Adaptive selection, per-question feedback beyond `is_correct`, leaderboards, and authentication remain out of scope.
+
+## ADR-021: Deterministic performance aggregation and threshold-based weak-topic detection
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M4C needs to report a learner's accuracy by topic and skill and identify areas requiring attention, using only the answer submissions already persisted by M4B.
+
+### Decision
+
+Implement performance aggregation as direct SQL aggregate queries (JOIN + GROUP BY equivalent via Python dict accumulation over fetched rows) inside `LearnerRepository`. Implement weak-topic detection as a pure domain function `detect_weak_areas` in `app/domain/assessment.py`. Use two module-level constants for the policy: `WEAK_TOPIC_MIN_ATTEMPTS = 3` and `WEAK_TOPIC_ACCURACY_THRESHOLD = 0.60`. A topic or skill is weak when it has at least `min_attempts` attempts AND accuracy ≤ `accuracy_threshold`. Expose results through two read-only GET endpoints: `GET /learners/{learner_id}/performance` and `GET /learners/{learner_id}/weak-topics`. Return empty aggregates rather than 404 for unknown learners, since the learner identity is opaque and no learner table exists.
+
+### Rationale
+
+Deterministic aggregation over persisted submissions is the only reliable way to produce auditable, reproducible performance reports. An LLM cannot improve on a simple correct/attempts ratio and would introduce latency, cost, nondeterminism, and a failure mode (provider unavailable) that would block the learner from seeing their own score. The minimum-attempt threshold prevents a single incorrect answer from incorrectly flagging an area as weak; three attempts provides a minimum useful evidence base while keeping the threshold low enough to be actionable early. The 0.60 boundary is the standard passing threshold in many educational contexts and is easy to explain to a learner. Keeping the detection function pure and constant-backed makes it trivially testable and easy to adjust without touching I/O code.
+
+No new database tables are required: topic and skill labels already exist on `assessment_questions`, and submissions already link to questions via `question_id`. A JOIN at read time is correct and avoids denormalising data that could drift from the source.
+
+### Consequences
+
+Performance figures reflect all submitted answers for a learner across all sessions; there is no per-session breakdown in M4C. Accuracy of exactly 0.60 is treated as weak (≤ rather than <), which is the conservative choice. Questions that have been generated but never answered are correctly excluded because the aggregation starts from submissions, not questions. Adaptive selection, per-difficulty breakdown, trend analysis over time, and LLM-assisted diagnosis remain out of scope.

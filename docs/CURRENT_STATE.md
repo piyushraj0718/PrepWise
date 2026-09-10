@@ -160,3 +160,22 @@ The next milestone should define the next approved assessment-quality capability
   - `POST /quiz-sessions/{session_id}/complete` — marks the session `completed`, computes `correct_count` and `score_percent` from all submissions, returns `SessionResultResponse`; returns 409 if already completed.
 - Added focused domain, schema, repository, and API tests in `tests/test_answer_submission.py`.
 - Adaptive selection, authentication, and learner history remain out of scope.
+
+## Completed in Milestone 4C: Performance Accumulation and Weak-Topic Detection
+
+- Added deterministic domain functions in `app/domain/assessment.py`:
+  - `compute_accuracy(attempts, correct) -> float` — pure, no I/O.
+  - `detect_weak_areas(performances, min_attempts, accuracy_threshold) -> list[WeakArea]` — pure, no LLM calls.
+  - `AreaPerformance` and `WeakArea` frozen dataclasses.
+  - Module-level constants `WEAK_TOPIC_MIN_ATTEMPTS = 3` and `WEAK_TOPIC_ACCURACY_THRESHOLD = 0.60`.
+- Extended `LearnerRepository` with three read methods that aggregate directly from persisted submissions:
+  - `get_all_submissions_for_learner` — all submissions across all sessions for a learner.
+  - `get_topic_performance_for_learner` — per-topic attempt/correct counts via JOIN to `assessment_questions`.
+  - `get_skill_performance_for_learner` — per-skill equivalent.
+- Added learner performance schemas: `AreaPerformanceResponse`, `LearnerPerformanceResponse`, `WeakAreaResponse`, `LearnerWeakTopicsResponse`.
+- Added two read-only API endpoints:
+  - `GET /learners/{learner_id}/performance` — overall accuracy, per-topic, and per-skill breakdowns; returns empty aggregates for unknown learners.
+  - `GET /learners/{learner_id}/weak-topics` — topics and skills identified as weak, with the thresholds used in the response.
+- No new tables, migrations, or external services.
+- Added focused domain, repository, and API tests in `tests/test_learner_performance.py`.
+- Adaptive selection, authentication, learner history, dashboards, and LLM-assisted diagnosis remain out of scope.

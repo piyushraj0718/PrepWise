@@ -123,3 +123,46 @@ class SessionResultResponse(LearnerSchema):
     correct_count: int
     score_percent: float
     submissions: list[AnswerSubmissionResponse]
+
+
+# ---------------------------------------------------------------------------
+# M4C: Performance and weak-topic schemas
+# ---------------------------------------------------------------------------
+
+class AreaPerformanceResponse(LearnerSchema):
+    """Performance breakdown for a single topic or skill label."""
+
+    label: str
+    attempts: int
+    correct: int
+    accuracy: float
+
+
+class LearnerPerformanceResponse(LearnerSchema):
+    """Overall and per-area performance for a learner."""
+
+    learner_id: str
+    total_attempts: int
+    total_correct: int
+    overall_accuracy: float
+    by_topic: list[AreaPerformanceResponse]
+    by_skill: list[AreaPerformanceResponse]
+
+
+class WeakAreaResponse(LearnerSchema):
+    """A topic or skill identified as weak."""
+
+    label: str
+    attempts: int
+    correct: int
+    accuracy: float
+
+
+class LearnerWeakTopicsResponse(LearnerSchema):
+    """Weak topics and skills for a learner with the detection thresholds used."""
+
+    learner_id: str
+    min_attempts_threshold: int
+    accuracy_threshold: float
+    weak_topics: list[WeakAreaResponse]
+    weak_skills: list[WeakAreaResponse]
