@@ -15,6 +15,7 @@ from app.ai.assessment_evaluation import (
 )
 from app.ai.assessment_prompts import (
     ASSESSMENT_PROMPT_VERSION,
+    ADAPTIVE_WEAK_AREAS_MAX,
     ASSESSMENT_EVALUATION_PROMPT_VERSION,
     build_assessment_prompt,
 )
@@ -102,7 +103,11 @@ class AssessmentGenerationService:
         if self.semantic_evaluation_enabled and self.evaluator is None:
             raise ValueError("An evaluator is required when semantic evaluation is enabled")
 
-    def generate(self, request: QuestionGenerationRequest) -> tuple[Any, list[Any]]:
+    def generate(
+        self,
+        request: QuestionGenerationRequest,
+        weak_areas_hint: list[str] | None = None,
+    ) -> tuple[Any, list[Any]]:
         document_id = str(request.document_id) if request.document_id else None
         self._validate_document(document_id)
         try:
@@ -134,7 +139,7 @@ class AssessmentGenerationService:
                 attempt_request = request.model_copy(
                     update={"count": len(pending_slots)})
                 generated = self._generate_questions(
-                    attempt_request, candidates)
+                    attempt_request, candidates, weak_areas_hint=weak_areas_hint)
                 accepted_in_batch = [
                     accepted_questions[slot]
                     for slot in sorted(accepted_questions)
@@ -290,6 +295,7 @@ class AssessmentGenerationService:
         self,
         request: QuestionGenerationRequest,
         candidates: Sequence[RerankedResult],
+        weak_areas_hint: list[str] | None = None,
     ) -> GeneratedAssessment:
         prompt = build_assessment_prompt(
             request.query,
@@ -298,6 +304,7 @@ class AssessmentGenerationService:
             request.difficulty.value if request.difficulty else None,
             request.bloom_level.value if request.bloom_level else None,
             request.skill,
+            weak_areas_hint=weak_areas_hint,
         )
         try:
             raw_output = self.provider.generate_structured(

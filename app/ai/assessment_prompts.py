@@ -1,6 +1,10 @@
 ASSESSMENT_PROMPT_VERSION = "mcq-grounded-v1"
 ASSESSMENT_EVALUATION_PROMPT_VERSION = "mcq-semantic-evaluation-v1"
 
+# Maximum number of weak-area labels included in an adaptive prompt hint.
+# This bounds prompt growth when a learner has many weak areas.
+ADAPTIVE_WEAK_AREAS_MAX: int = 5
+
 ASSESSMENT_SYSTEM_PROMPT = """You generate grounded multiple-choice questions from supplied source context.
 Use only the supplied source context. Do not use outside knowledge or invent facts.
 Create clear, unambiguous questions supported by one or more supplied chunks.
@@ -19,8 +23,17 @@ def build_assessment_prompt(
     difficulty: str | None,
     bloom_level: str | None,
     skill: str | None,
+    weak_areas_hint: list[str] | None = None,
 ) -> str:
-    return (
+    """Build the MCQ generation prompt.
+
+    weak_areas_hint: optional list of topic/skill labels (already bounded by
+    ADAPTIVE_WEAK_AREAS_MAX) that the model should preferentially cover when
+    the supplied context is relevant. This is a soft preference — the original
+    query remains authoritative and the model must still ground answers in the
+    supplied context.
+    """
+    base = (
         f"{ASSESSMENT_SYSTEM_PROMPT}\n\n"
         f"Generate {count} MCQ question(s).\n"
         f"Target difficulty: {difficulty or 'choose an appropriate level'}.\n"
@@ -30,6 +43,17 @@ def build_assessment_prompt(
         f"{context}\n\n"
         f"Topic or query: {query}"
     )
+    if weak_areas_hint:
+        labels = ", ".join(weak_areas_hint)
+        hint = (
+            "\n\nLearner preference (soft): this learner has demonstrated weakness in the "
+            f"following area(s): {labels}. "
+            "Where the supplied context is relevant to these areas, prefer questions that "
+            "address them. The topic/query above remains authoritative; do not invent "
+            "coverage for areas not supported by the context."
+        )
+        return base + hint
+    return base
 
 
 def build_assessment_evaluation_prompt(

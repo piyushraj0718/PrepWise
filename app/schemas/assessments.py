@@ -21,6 +21,7 @@ class QuestionGenerationRequest(AssessmentSchema):
     top_k: StrictInt = Field(default=5, ge=1, le=50)
     candidate_k: StrictInt | None = Field(default=None, ge=1, le=100)
     seed: StrictInt | None = None
+    learner_id: str | None = None
 
     @field_validator("query")
     @classmethod
@@ -34,6 +35,13 @@ class QuestionGenerationRequest(AssessmentSchema):
     def skill_must_not_be_blank(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
             raise ValueError("Skill must not be blank")
+        return value.strip() if value is not None else None
+
+    @field_validator("learner_id")
+    @classmethod
+    def learner_id_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("learner_id must not be blank")
         return value.strip() if value is not None else None
 
 

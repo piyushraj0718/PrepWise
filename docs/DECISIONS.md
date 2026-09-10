@@ -448,3 +448,24 @@ No new database tables are required: topic and skill labels already exist on `as
 ### Consequences
 
 Performance figures reflect all submitted answers for a learner across all sessions; there is no per-session breakdown in M4C. Accuracy of exactly 0.60 is treated as weak (≤ rather than <), which is the conservative choice. Questions that have been generated but never answered are correctly excluded because the aggregation starts from submissions, not questions. Adaptive selection, per-difficulty breakdown, trend analysis over time, and LLM-assisted diagnosis remain out of scope.
+
+## ADR-022: Adaptive generation augments the existing M3B prompt; weak areas come from deterministic M4C logic
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M4D needs to make question generation learner-adaptive using the weak-topic data already computed by M4C, without duplicating the M3B generation pipeline, M3C quality/regeneration logic, or M3A persistence code.
+
+### Decision
+
+Add an optional `learner_id` field to `QuestionGenerationRequest`. When present, the route fetches topic and skill performances via the existing `LearnerRepository` methods, calls the existing `detect_weak_areas` domain function, deduplicates and bounds the result to `ADAPTIVE_WEAK_AREAS_MAX = 5` labels, and passes the list as `weak_areas_hint` to `AssessmentGenerationService.generate`. The service threads the hint to `build_assessment_prompt`, which appends a single soft-preference paragraph. Requests without `learner_id`, and requests for learners with no weak areas, receive `None` and behave exactly as before M4D.
+
+### Rationale
+
+Augmenting the prompt is the minimal correct extension point: it biases the model toward weak areas without changing retrieval, reranking, citation validation, quality scoring, regeneration policy, or persistence — all of which remain unchanged. The hint is explicitly soft so the model stays grounded in retrieved context and the original query remains authoritative. Using deterministic M4C data (not a second LLM call) to identify weak areas keeps the adaptation auditable, reproducible, and free of additional provider cost or failure modes. Bounding the hint to five labels prevents prompt inflation when a learner has many weak areas. Unknown learners and learners below the minimum-attempt threshold fall through to normal generation, making the feature safe to introduce without requiring learner pre-registration.
+
+### Consequences
+
+Adaptation is prompt-level only: there is no retrieval re-weighting or question-slot reservation for weak areas. The model may not always produce questions covering the hinted areas if context is insufficient; this is intentional and consistent with the grounding-first principle. Per-difficulty or per-Bloom adaptive targeting, multi-document adaptive retrieval, and learner history trend analysis remain out of scope.

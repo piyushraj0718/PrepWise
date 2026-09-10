@@ -74,6 +74,7 @@ from app.domain.assessment import (
     WEAK_TOPIC_MIN_ATTEMPTS,
     WEAK_TOPIC_ACCURACY_THRESHOLD,
 )
+from app.ai.assessment_prompts import ADAPTIVE_WEAK_AREAS_MAX
 from app.schemas.learner import (
     AnswerSubmissionRequest,
     AnswerSubmissionResponse,
@@ -376,9 +377,28 @@ def generate_questions(
     request: QuestionGenerationRequest,
     service: AssessmentGenerationService = Depends(
         get_assessment_generation_service),
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
 ) -> QuestionGenerationResponse:
+    # Resolve weak-area hint when learner_id is present (M4D adaptive path).
+    weak_areas_hint: list[str] | None = None
+    if request.learner_id:
+        topic_perfs = learner_repo.get_topic_performance_for_learner(request.learner_id)
+        skill_perfs = learner_repo.get_skill_performance_for_learner(request.learner_id)
+        weak_topics = detect_weak_areas(topic_perfs)
+        weak_skills = detect_weak_areas(skill_perfs)
+        # Deduplicate labels from both dimensions; bound to ADAPTIVE_WEAK_AREAS_MAX.
+        seen: set[str] = set()
+        combined: list[str] = []
+        for area in weak_topics + weak_skills:
+            if area.label not in seen:
+                seen.add(area.label)
+                combined.append(area.label)
+            if len(combined) >= ADAPTIVE_WEAK_AREAS_MAX:
+                break
+        weak_areas_hint = combined if combined else None
+
     try:
-        run, questions = service.generate(request)
+        run, questions = service.generate(request, weak_areas_hint=weak_areas_hint)
     except (DocumentNotFoundError,) as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error

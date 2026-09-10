@@ -179,3 +179,13 @@ The next milestone should define the next approved assessment-quality capability
 - No new tables, migrations, or external services.
 - Added focused domain, repository, and API tests in `tests/test_learner_performance.py`.
 - Adaptive selection, authentication, learner history, dashboards, and LLM-assisted diagnosis remain out of scope.
+
+## Completed in Milestone 4D: Adaptive Question Generation
+
+- Extended `QuestionGenerationRequest` with an optional `learner_id` field (validated non-blank). Existing requests without `learner_id` are fully backward-compatible.
+- Extended `build_assessment_prompt` in `app/ai/assessment_prompts.py` with an optional `weak_areas_hint` parameter. When non-empty, a clearly-labelled soft-preference paragraph is appended to the prompt instructing the model to preferentially cover the named weak areas when relevant, while preserving the original query as authoritative. The constant `ADAPTIVE_WEAK_AREAS_MAX = 5` bounds the number of labels included.
+- Extended `AssessmentGenerationService.generate` to accept an optional `weak_areas_hint: list[str]` argument, threaded through to `_generate_questions` and `build_assessment_prompt`. No new LLM calls, no changes to M3C quality validation, citation validation, or regeneration logic.
+- Updated the `POST /questions/generate` route to inject `LearnerRepository`, fetch topic and skill performances using existing M4C repository methods, call `detect_weak_areas`, deduplicate labels across dimensions, bound to `ADAPTIVE_WEAK_AREAS_MAX`, and pass the result to `service.generate`. Unknown learners and learners with no weak areas receive `None`, preserving normal M3B behavior.
+- No new database tables, migrations, or external services.
+- Added focused prompt, schema, service, repository, and API tests in `tests/test_adaptive_generation.py`.
+- Full adaptive path: `learner_id` → M4C topic/skill performance → `detect_weak_areas` → bounded label list → soft-preference prompt hint → existing M3B generation → existing M3C quality/regeneration → existing M3A persistence.
