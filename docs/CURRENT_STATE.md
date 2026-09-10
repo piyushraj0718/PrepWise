@@ -1,6 +1,6 @@
 # Current Project State
 
-Last reviewed: 2026-09-10
+Last reviewed: 2026-09-10 (updated for M4B)
 
 ## Repository inventory
 
@@ -138,3 +138,25 @@ Last reviewed: 2026-09-10
 To run locally: create a PostgreSQL database, copy `.env.example` to `.env` and set `DATABASE_URL`, install `requirements.txt`, then run `uvicorn app.main:app --reload`. The first use of the default embedding provider downloads `all-MiniLM-L6-v2` through `sentence-transformers`; subsequent uses use the local cache. Tables are created at application startup for this foundation milestone.
 
 The next milestone should define the next approved assessment-quality capability. Correct answers are currently included in the administrative generation response; answer submission, scoring, quiz sessions, adaptive selection, and authentication are not implemented.
+
+## Completed in Milestone 4A: Quiz Session Foundation
+
+- Added `LearnerQuizSession` SQLAlchemy model and `learner_quiz_sessions` table with Alembic migration `0004_learner_quiz_sessions`.
+- Added `LearnerRepository` with `create_session` and `get_session`.
+- Added learner-facing Pydantic schemas: `QuizSessionCreateRequest`, `QuizSessionResponse`, `LearnerQuestionResponse` (omits `correct_option_key` and citations), `QuizSessionQuestionsResponse`.
+- Added `POST /quiz-sessions`, `GET /quiz-sessions/{session_id}`, and `GET /quiz-sessions/{session_id}/questions`.
+- `GET /quiz-sessions/{session_id}/questions` returns questions in creation order and deliberately withholds `correct_option_key` and citations.
+- Added focused schema, repository, and API tests.
+
+## Completed in Milestone 4B: Answer Submission and Deterministic MCQ Scoring
+
+- Added `LearnerAnswerSubmission` SQLAlchemy model (already present in M4A model file) and Alembic migration `0005_learner_answer_submissions` creating the table with a unique constraint on `(session_id, question_id)`.
+- Added `score_mcq_answer(submitted_key, correct_key) -> bool` as a pure deterministic domain function in `app/domain/assessment.py`; it has no I/O dependencies and is the sole authority for MCQ correctness.
+- Extended `LearnerRepository` with `submit_answer`, `get_submission`, `get_submissions_for_session`, and `complete_session`. `submit_answer` raises `DuplicateSubmissionError` on a unique-constraint violation.
+- Added learner-facing schemas `AnswerSubmissionRequest`, `AnswerSubmissionResponse`, and `SessionResultResponse`.
+- Added three API routes:
+  - `POST /quiz-sessions/{session_id}/answers` — validates the session is active and the question belongs to the session, scores with `score_mcq_answer`, persists the submission; returns 201. Returns 404 for unknown session/question, 422 for inactive session, 409 for duplicate submission.
+  - `GET /quiz-sessions/{session_id}/answers/{question_id}` — retrieves a single submission or 404.
+  - `POST /quiz-sessions/{session_id}/complete` — marks the session `completed`, computes `correct_count` and `score_percent` from all submissions, returns `SessionResultResponse`; returns 409 if already completed.
+- Added focused domain, schema, repository, and API tests in `tests/test_answer_submission.py`.
+- Adaptive selection, authentication, and learner history remain out of scope.

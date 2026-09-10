@@ -18,3 +18,12 @@ class BloomLevel(str, Enum):
     ANALYZE = "analyze"
     EVALUATE = "evaluate"
     CREATE = "create"
+
+
+def score_mcq_answer(submitted_key: str, correct_key: str) -> bool:
+    """Return True if the submitted option key matches the correct option key.
+
+    Comparison is case-sensitive and exact, matching how option keys are stored
+    (always uppercase single letters: A, B, C, D).
+    """
+    return submitted_key == correct_key

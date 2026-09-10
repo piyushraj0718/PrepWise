@@ -1,4 +1,4 @@
-"""Learner-facing Pydantic schemas for M4A.
+"""Learner-facing Pydantic schemas for M4A and M4B.
 
 These schemas deliberately omit fields that must not be visible to a learner
 before they have submitted an answer:
@@ -7,7 +7,7 @@ before they have submitted an answer:
 """
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LearnerSchema(BaseModel):
@@ -80,3 +80,46 @@ class LearnerQuestionResponse(LearnerSchema):
 class QuizSessionQuestionsResponse(LearnerSchema):
     session_id: str
     questions: list[LearnerQuestionResponse]
+
+
+# ---------------------------------------------------------------------------
+# Answer submission schemas (M4B)
+# ---------------------------------------------------------------------------
+
+class AnswerSubmissionRequest(LearnerSchema):
+    question_id: str
+    submitted_option_key: str = Field(min_length=1, max_length=20)
+
+    @field_validator("question_id")
+    @classmethod
+    def question_id_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("question_id must not be blank")
+        return value.strip()
+
+    @field_validator("submitted_option_key")
+    @classmethod
+    def option_key_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("submitted_option_key must not be blank")
+        return value.strip()
+
+
+class AnswerSubmissionResponse(LearnerSchema):
+    id: str
+    session_id: str
+    question_id: str
+    learner_id: str
+    submitted_option_key: str
+    is_correct: bool
+    submitted_at: datetime
+
+
+class SessionResultResponse(LearnerSchema):
+    session_id: str
+    learner_id: str
+    status: str
+    total_questions: int
+    correct_count: int
+    score_percent: float
+    submissions: list[AnswerSubmissionResponse]

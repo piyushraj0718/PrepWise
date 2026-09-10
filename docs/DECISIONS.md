@@ -402,3 +402,26 @@ This completes the M3C audit trail without making stored scores authoritative fo
 ### Consequences
 
 Evaluation records may exist for runs that never produce final questions. Deterministic records store hard-failure codes rather than full warning lists, and semantic records store dimension scores rather than per-dimension reasons. Quality dashboards, coverage/diversity analysis, and learner-facing workflows remain out of scope.
+
+## ADR-020: Place deterministic MCQ scoring in the domain layer and make session completion explicit
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M4B needs to evaluate whether a learner's submitted option key matches the correct answer for an MCQ question. The correct key is stored in `assessment_questions.correct_option_key`. The submission also needs to transition a session from `active` to `completed` with an aggregate score.
+
+### Decision
+
+Implement `score_mcq_answer(submitted_key: str, correct_key: str) -> bool` as a standalone pure function in `app/domain/assessment.py`. Fetch `correct_option_key` from `AssessmentRepository` inside the route handler at submission time. Persist each submission as an immutable `LearnerAnswerSubmission` row with a unique constraint on `(session_id, question_id)`.
+
+Session completion is an explicit learner action via `POST /quiz-sessions/{session_id}/complete`, which marks the session `completed`, sets `completed_at`, and returns the aggregate score derived from all persisted submissions. Completion does not require all questions to have been answered.
+
+### Rationale
+
+A domain function has no I/O dependencies, is trivially testable, and prevents the scoring rule from being buried in a service or route. Fetching the correct key at submission time rather than caching it in the session prevents stale-answer bugs if a question were ever revised. A unique constraint at the database level ensures idempotency guarantees survive concurrent requests. Making completion explicit (rather than auto-triggering after the last answer) gives the learner control over when to finalize, keeping the route surface small and the session lifecycle clear.
+
+### Consequences
+
+Changing an already-submitted answer is not supported; the 409 response makes this visible to callers. The `score_percent` is computed from submitted questions only, so an incomplete session will show 0% for unanswered questions if completed early. Adaptive selection, per-question feedback beyond `is_correct`, leaderboards, and authentication remain out of scope.

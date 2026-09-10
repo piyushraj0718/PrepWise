@@ -66,14 +66,18 @@ from app.services.assessment_generation import (
     AssessmentValidationError,
 )
 from app.repositories.assessments import AssessmentRepository
-from app.repositories.learner import LearnerRepository
+from app.repositories.learner import DuplicateSubmissionError, LearnerRepository
 from app.ai.llm import LLMConfigurationError, LLMProviderError, LLMResponseError
+from app.domain.assessment import score_mcq_answer
 from app.schemas.learner import (
+    AnswerSubmissionRequest,
+    AnswerSubmissionResponse,
     LearnerQuestionResponse,
     LearnerQuestionOptionResponse,
     QuizSessionCreateRequest,
     QuizSessionQuestionsResponse,
     QuizSessionResponse,
+    SessionResultResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -598,3 +602,125 @@ def get_quiz_session_questions(
             )
         )
     return QuizSessionQuestionsResponse(session_id=session_id, questions=questions)
+
+
+# ---------------------------------------------------------------------------
+# M4B – Answer submission and session completion
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/quiz-sessions/{session_id}/answers",
+    response_model=AnswerSubmissionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def submit_answer(
+    session_id: str,
+    request: AnswerSubmissionRequest,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+    assessment_repo: AssessmentRepository = Depends(get_assessment_repository),
+) -> AnswerSubmissionResponse:
+    """Submit a learner's answer for one question in a quiz session.
+
+    - 404 if the session or question does not exist.
+    - 422 if the session is not active (already completed).
+    - 409 if an answer for this question has already been submitted.
+    """
+    quiz_session = learner_repo.get_session(session_id)
+    if quiz_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Quiz session was not found",
+        )
+    if quiz_session.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Answers can only be submitted to an active session",
+        )
+    if request.question_id not in quiz_session.question_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question does not belong to this session",
+        )
+    question = assessment_repo.get_question(request.question_id)
+    if question is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question was not found",
+        )
+    is_correct = score_mcq_answer(
+        request.submitted_option_key, question.correct_option_key
+    )
+    try:
+        submission = learner_repo.submit_answer(
+            session_id=session_id,
+            question_id=request.question_id,
+            learner_id=quiz_session.learner_id,
+            submitted_option_key=request.submitted_option_key,
+            is_correct=is_correct,
+        )
+    except DuplicateSubmissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(error)
+        ) from error
+    return AnswerSubmissionResponse.model_validate(submission)
+
+
+@router.get(
+    "/quiz-sessions/{session_id}/answers/{question_id}",
+    response_model=AnswerSubmissionResponse,
+)
+def get_answer_submission(
+    session_id: str,
+    question_id: str,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+) -> AnswerSubmissionResponse:
+    """Return the submission for a specific question in a session, or 404."""
+    submission = learner_repo.get_submission(session_id, question_id)
+    if submission is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Submission was not found",
+        )
+    return AnswerSubmissionResponse.model_validate(submission)
+
+
+@router.post(
+    "/quiz-sessions/{session_id}/complete",
+    response_model=SessionResultResponse,
+)
+def complete_quiz_session(
+    session_id: str,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+) -> SessionResultResponse:
+    """Mark a session as completed and return the aggregate score.
+
+    - 404 if the session does not exist.
+    - 409 if the session is already completed.
+    """
+    quiz_session = learner_repo.get_session(session_id)
+    if quiz_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Quiz session was not found",
+        )
+    if quiz_session.status == "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Quiz session is already completed",
+        )
+    completed_session = learner_repo.complete_session(session_id)
+    submissions = learner_repo.get_submissions_for_session(session_id)
+    total = len(quiz_session.question_ids)
+    correct_count = sum(1 for s in submissions if s.is_correct)
+    score_percent = (correct_count / total * 100.0) if total > 0 else 0.0
+    return SessionResultResponse(
+        session_id=session_id,
+        learner_id=completed_session.learner_id,
+        status=completed_session.status,
+        total_questions=total,
+        correct_count=correct_count,
+        score_percent=round(score_percent, 2),
+        submissions=[
+            AnswerSubmissionResponse.model_validate(s) for s in submissions
+        ],
+    )
