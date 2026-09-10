@@ -7,6 +7,7 @@ from app.api.dependencies import (
     get_assessment_repository,
     get_document_service,
     get_embedding_service,
+    get_learner_repository,
     get_rag_service,
     get_search_service,
 )
@@ -65,7 +66,15 @@ from app.services.assessment_generation import (
     AssessmentValidationError,
 )
 from app.repositories.assessments import AssessmentRepository
+from app.repositories.learner import LearnerRepository
 from app.ai.llm import LLMConfigurationError, LLMProviderError, LLMResponseError
+from app.schemas.learner import (
+    LearnerQuestionResponse,
+    LearnerQuestionOptionResponse,
+    QuizSessionCreateRequest,
+    QuizSessionQuestionsResponse,
+    QuizSessionResponse,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -483,3 +492,109 @@ def get_generation_run_quality(
             QualityEvaluationResponse.model_validate(item) for item in evaluations
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# M4A – Quiz sessions
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/quiz-sessions",
+    response_model=QuizSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_quiz_session(
+    request: QuizSessionCreateRequest,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+    assessment_repo: AssessmentRepository = Depends(get_assessment_repository),
+) -> QuizSessionResponse:
+    """Create a new quiz session for a learner over a set of question IDs."""
+    # Validate every supplied question ID exists.
+    missing = [
+        qid for qid in request.question_ids
+        if assessment_repo.get_question(qid) is None
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Question IDs not found: {missing}",
+        )
+    session = learner_repo.create_session(
+        learner_id=request.learner_id,
+        question_ids=request.question_ids,
+    )
+    return QuizSessionResponse.model_validate(session)
+
+
+@router.get(
+    "/quiz-sessions/{session_id}",
+    response_model=QuizSessionResponse,
+)
+def get_quiz_session(
+    session_id: str,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+) -> QuizSessionResponse:
+    """Return quiz session metadata."""
+    session = learner_repo.get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Quiz session was not found",
+        )
+    return QuizSessionResponse.model_validate(session)
+
+
+@router.get(
+    "/quiz-sessions/{session_id}/questions",
+    response_model=QuizSessionQuestionsResponse,
+)
+def get_quiz_session_questions(
+    session_id: str,
+    learner_repo: LearnerRepository = Depends(get_learner_repository),
+    assessment_repo: AssessmentRepository = Depends(get_assessment_repository),
+) -> QuizSessionQuestionsResponse:
+    """Return ordered learner-safe questions for a quiz session.
+
+    correct_option_key and citations are intentionally excluded.
+    """
+    session = learner_repo.get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Quiz session was not found",
+        )
+    questions = []
+    for qid in session.question_ids:
+        question = assessment_repo.get_question(qid)
+        if question is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Question {qid} was not found",
+            )
+        learner_options = [
+            LearnerQuestionOptionResponse(
+                id=opt.id,
+                option_key=opt.option_key,
+                option_text=opt.option_text,
+                display_order=opt.display_order,
+            )
+            for opt in question.options
+        ]
+        questions.append(
+            LearnerQuestionResponse(
+                id=question.id,
+                generation_run_id=question.generation_run_id,
+                document_id=question.document_id,
+                question_type=question.question_type,
+                stem=question.stem,
+                explanation=question.explanation,
+                difficulty=question.difficulty,
+                bloom_level=question.bloom_level,
+                topic=question.topic,
+                skill=question.skill,
+                content_version=question.content_version,
+                created_at=question.created_at,
+                options=learner_options,
+            )
+        )
+    return QuizSessionQuestionsResponse(session_id=session_id, questions=questions)

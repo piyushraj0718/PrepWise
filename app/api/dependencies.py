@@ -12,6 +12,7 @@ from app.domain.assessment_semantic import SemanticQualityPolicy
 from app.db.session import get_db
 from app.repositories.documents import DocumentRepository
 from app.repositories.assessments import AssessmentRepository
+from app.repositories.learner import LearnerRepository
 from app.services.documents import DocumentChunker, DocumentService, LocalDocumentStorage, PdfTextExtractor
 from app.services.embeddings import EmbeddingService
 from app.services.retrieval import RetrievalService
@@ -136,3 +137,7 @@ def get_assessment_generation_service(
 
 def get_assessment_repository(db: Session = Depends(get_db)) -> AssessmentRepository:
     return AssessmentRepository(db)
+
+
+def get_learner_repository(db: Session = Depends(get_db)) -> LearnerRepository:
+    return LearnerRepository(db)

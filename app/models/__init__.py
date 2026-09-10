@@ -1,4 +1,5 @@
 from app.models.document import Document, DocumentChunk, DocumentEmbedding, DocumentText
+from app.models.learner import LearnerQuizSession
 from app.models.assessment import (
     AssessmentGenerationRun,
     AssessmentQuestion,
@@ -19,4 +20,5 @@ __all__ = [
     "AssessmentQualityEvaluation",
     "AssessmentQuestionCitation",
     "AssessmentQuestionOption",
+    "LearnerQuizSession",
 ]
