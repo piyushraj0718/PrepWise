@@ -255,3 +255,64 @@ Gemini provides a straightforward structured-generation API and can be replaced 
 ### Consequences
 
 Real `/ask` requests require a configured Gemini API key, network access, and model availability. The optional smoke script may incur provider usage and latency. No question generation, quiz generation, adaptive learning, agents, or evaluation framework is included.
+
+## ADR-013: Add Alembic and an assessment persistence foundation
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M3A needs durable assessment records while preserving the existing M0-M2 document and RAG behavior. The application previously relied on startup `create_all()` and had no migration history.
+
+### Decision
+
+Add Alembic with an initial baseline migration representing the current document/text/chunk/embedding schema and the M3A assessment tables. Keep startup `create_all()` temporarily for compatibility. Existing databases are adopted with `alembic stamp head`; new databases use `alembic upgrade head`.
+
+Persist generation runs, versioned MCQ questions, normalized options, and chunk-linked citation snapshots. Use strict application enums for question type, difficulty, and Bloom level. Repository batch persistence commits only after all child records are flushed successfully.
+
+### Rationale
+
+Alembic provides an explicit, reviewable schema history without rewriting existing data. Separate models and schemas preserve the domain/API boundary. Citation snapshots retain the exact evidence used, and atomic batches prevent incomplete assessment sets.
+
+### Consequences
+
+M3A adds migration tooling and assessment persistence but no question-generation provider or learner workflow. A future migration should define chunk replacement/staleness behavior for questions that cite rebuilt chunks. The initial migration must not be run as an upgrade against an already-created M0-M2 database; stamp it after schema review.
+
+## ADR-014: Generate grounded MCQs through the existing LLM provider port
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M3B needs structured MCQ generation grounded in M2 retrieval results without coupling the application service to Gemini or duplicating retrieval logic.
+
+### Decision
+
+Extend the existing `LLMProvider` with a structured JSON generation capability. `AssessmentGenerationService` owns request validation, document state checks, retrieval/reranking orchestration, prompt construction, Pydantic parsing, deterministic validation, trusted citation mapping, and atomic M3A persistence. Gemini remains the only configured implementation. The model receives only application chunk IDs and source text, and returned IDs must belong to the reranked candidate set.
+
+### Rationale
+
+This keeps future Groq/GLM adapters behind the same provider boundary, preserves one retrieval pipeline, and ensures model output cannot manufacture source metadata or bypass deterministic policy checks.
+
+### Consequences
+
+M3B provides administrative generation/read APIs and includes correct answers in those responses. Semantic distractor quality and Bloom classification remain imperfect model-dependent concerns. Learner-facing schemas, submissions, scoring, adaptive sequencing, and additional providers remain future work.
+
+## ADR-015: Retry transient Gemini transport failures in the provider adapter
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+Real Gemini smoke tests can receive temporary 429 or 5xx responses and connection failures. Retrying in the assessment service would couple application behavior to Gemini and would also leave `/ask` without the same resilience.
+
+### Decision
+
+Implement bounded exponential retry handling inside `GeminiLLMProvider`. Retry HTTP 429, 500, 502, 503, and 504, plus narrowly recognized connection reset/refusal/abort/timeout failures. Do not retry authentication, malformed-request, unsupported-model, other permanent 4xx, or malformed JSON failures. Configure retry count and base delay through `LLM_MAX_RETRIES` and `LLM_RETRY_BASE_DELAY_SECONDS`, with provider-side upper bounds.
+
+### Consequences
+
+Both `/ask` and structured M3B generation inherit the same provider resilience without changing their abstractions. A request can take longer than one timeout because each bounded attempt has its own timeout plus backoff delay; the default is two retries with 0.5 and 1.0 second delays.

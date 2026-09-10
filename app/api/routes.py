@@ -3,6 +3,8 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
 from app.api.dependencies import (
+    get_assessment_generation_service,
+    get_assessment_repository,
     get_document_service,
     get_embedding_service,
     get_rag_service,
@@ -23,6 +25,14 @@ from app.schemas.documents import (
     SearchRequest,
     SearchResponse,
     SearchResultItem,
+)
+from app.schemas.assessment_generation import QuestionGenerationResponse
+from app.schemas.assessments import (
+    GenerationRunResponse,
+    QuestionGenerationRequest,
+    QuestionListResponse,
+    QuestionResponse,
+    QuestionListFilter,
 )
 from app.services.documents import (
     DocumentNotFoundError,
@@ -45,6 +55,14 @@ from app.services.reranking import (
     RerankingService,
 )
 from app.services.rag import InvalidRAGQuery, RAGError, RAGService
+from app.services.assessment_generation import (
+    AssessmentGenerationError,
+    AssessmentGenerationService,
+    AssessmentNoContextError,
+    AssessmentPersistenceError,
+    AssessmentValidationError,
+)
+from app.repositories.assessments import AssessmentRepository
 from app.ai.llm import LLMConfigurationError, LLMProviderError, LLMResponseError
 
 logger = logging.getLogger(__name__)
@@ -323,3 +341,99 @@ def ask_question(
             for citation in result.citations
         ],
     )
+
+
+@router.post(
+    "/questions/generate",
+    response_model=QuestionGenerationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def generate_questions(
+    request: QuestionGenerationRequest,
+    service: AssessmentGenerationService = Depends(
+        get_assessment_generation_service),
+) -> QuestionGenerationResponse:
+    try:
+        run, questions = service.generate(request)
+    except (DocumentNotFoundError,) as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except DocumentProcessingStateError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except (InvalidRerankingQuery, InvalidRetrievalQuery) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except (AssessmentNoContextError, AssessmentValidationError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except LLMResponseError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    except LLMProviderError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    except AssessmentPersistenceError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(error)) from error
+    except AssessmentGenerationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+
+    return QuestionGenerationResponse(
+        run=GenerationRunResponse.model_validate(run),
+        questions=[QuestionResponse.model_validate(
+            question) for question in questions],
+    )
+
+
+@router.get("/questions/{question_id}", response_model=QuestionResponse)
+def get_question(
+    question_id: str,
+    repository: AssessmentRepository = Depends(get_assessment_repository),
+) -> QuestionResponse:
+    question = repository.get_question(question_id)
+    if question is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Question was not found")
+    return QuestionResponse.model_validate(question)
+
+
+@router.get("/questions", response_model=QuestionListResponse)
+def list_questions(
+    filters: QuestionListFilter = Depends(),
+    repository: AssessmentRepository = Depends(get_assessment_repository),
+) -> QuestionListResponse:
+    questions = repository.list_questions(
+        document_id=str(filters.document_id) if filters.document_id else None,
+        question_type=filters.question_type.value if filters.question_type else None,
+        difficulty=filters.difficulty.value if filters.difficulty else None,
+        bloom_level=filters.bloom_level.value if filters.bloom_level else None,
+        topic=filters.topic,
+        skill=filters.skill,
+        limit=filters.limit,
+        offset=filters.offset,
+    )
+    return QuestionListResponse(
+        questions=[QuestionResponse.model_validate(
+            question) for question in questions],
+        limit=filters.limit,
+        offset=filters.offset,
+    )
+
+
+@router.get(
+    "/question-generation-runs/{run_id}",
+    response_model=GenerationRunResponse,
+)
+def get_generation_run(
+    run_id: str,
+    repository: AssessmentRepository = Depends(get_assessment_repository),
+) -> GenerationRunResponse:
+    run = repository.get_generation_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question generation run was not found",
+        )
+    return GenerationRunResponse.model_validate(run)

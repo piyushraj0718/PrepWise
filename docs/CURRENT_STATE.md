@@ -1,6 +1,6 @@
 # Current Project State
 
-Last reviewed: 2026-09-09
+Last reviewed: 2026-09-10
 
 ## Repository inventory
 
@@ -8,6 +8,7 @@ Last reviewed: 2026-09-09
 - `requirements.txt` defines the runtime and test dependencies; `.env.example` documents configuration.
 - PostgreSQL is the application database, configured with `DATABASE_URL`; tests use an injected SQLite database.
 - Local uploads are stored under `data/uploads` by default and are ignored by Git.
+- Alembic is configured with a baseline migration for the current schema. Startup table creation remains for compatibility while migration adoption is phased in.
 
 ## Completed in Milestone 0: Foundation
 
@@ -79,10 +80,28 @@ Last reviewed: 2026-09-09
 
 - PrepWise product features or user workflows.
 - AI prompts, hosted model calls, or API keys.
-- OCR, scanned-document/image processing, question generation, adaptive learning, authentication, queues, frontend, Docker, deployment, migrations, or CI.
+- OCR, scanned-document/image processing, question generation, adaptive learning, authentication, queues, frontend, Docker, deployment, and CI.
+
+## Completed in Milestone 3A: Assessment Foundation
+
+- Added Python/Pydantic assessment enums for MCQ, difficulty, and Bloom's taxonomy.
+- Added SQLAlchemy models for generation runs, questions, MCQ options, and question citations.
+- Added repository methods for retrieval and atomic generation-batch persistence, including source snapshots and retrieval metadata.
+- Added separate Pydantic request/response schemas with strict enum and count validation.
+- Added Alembic configuration and an initial migration representing the existing document schema plus assessment tables.
+- Question generation, structured LLM output, citation validation during generation, quiz sessions, scoring, and adaptive selection remain out of scope.
+
+## Completed in Milestone 3B: Question Generation Engine
+
+- Added structured generation support to the existing replaceable LLM provider abstraction.
+- Added grounded MCQ generation over the existing hybrid retrieval and reranking pipeline.
+- Added strict Pydantic output parsing and deterministic validation for MCQ structure, duplicate stems, citation IDs, citation markup, and forbidden option patterns.
+- Added atomic persistence and API endpoints for generation, question retrieval/listing, and generation-run retrieval.
+- Added an optional Gemini smoke script at `scripts/smoke_questions.py`; ordinary tests use fake providers and remain offline.
+- Added bounded Gemini retries for transient rate-limit, server, and connection failures with environment-backed settings; permanent errors are not retried.
 
 ## Known constraints and next inputs
 
 To run locally: create a PostgreSQL database, copy `.env.example` to `.env` and set `DATABASE_URL`, install `requirements.txt`, then run `uvicorn app.main:app --reload`. The first use of the default embedding provider downloads `all-MiniLM-L6-v2` through `sentence-transformers`; subsequent uses use the local cache. Tables are created at application startup for this foundation milestone.
 
-The next milestone should define a separate approved scope for product learning workflows. Question generation, quizzes, adaptive learning, and other M3 features are not implemented here.
+The next milestone should define learner-facing assessment workflows. Correct answers are currently included in the administrative generation response; answer submission, scoring, quiz sessions, adaptive selection, and authentication are not implemented.

@@ -70,4 +70,24 @@ The default local adapter uses the Sentence Transformers cross-encoder `cross-en
 
 M2F adds `POST /ask` as a separate grounded-answer use case. It runs the existing retrieval and reranking services, formats the reranked chunks into context, and passes that context plus the original query to a replaceable `LLMProvider`. The centralized grounding prompt requires context-only answers, explicit uncertainty when context is insufficient, and chunk-ID citations. The application validates every returned citation against the supplied candidate IDs and maps valid IDs back to authoritative chunk metadata and retrieval scores; the model cannot create source metadata.
 
-The first real provider is Gemini's REST `generateContent` API, configured with `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, and `GEMINI_TIMEOUT_SECONDS`. The provider requests JSON containing an answer and chunk-ID list, uses standard-library HTTP, and never loads or calls during application import. No-context requests return a deterministic fallback without calling the LLM. An optional manual smoke path is `python scripts/smoke_rag.py "your question"` after configuring the environment and preparing documents; it prints answers and chunk IDs only, never credentials.
+The first real provider is Gemini's REST `generateContent` API, configured with `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `GEMINI_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES`, and `LLM_RETRY_BASE_DELAY_SECONDS`. The provider requests JSON containing an answer and chunk-ID list, uses standard-library HTTP, and never loads or calls during application import. Bounded retries cover HTTP 429 and 5xx responses plus narrowly recognized connection failures; permanent 4xx responses and malformed JSON fail immediately. No-context requests return a deterministic fallback without calling the LLM. An optional manual smoke path is `python scripts/smoke_rag.py "your question"` after configuring the environment and preparing documents; it prints answers and chunk IDs only, never credentials.
+
+## M3A assessment foundation
+
+M3A introduces assessment persistence without implementing question generation. A generation run stores request and model metadata, questions store versioned MCQ content and learning metadata, options store normalized choices, and citations link questions to existing document chunks.
+
+The controlled vocabulary is represented by Python/Pydantic enums: `mcq`; `easy`, `medium`, and `hard`; and the six Bloom levels from `remember` through `create`. The schema supports only MCQ until another question type is approved.
+
+Question citations have a foreign key to `document_chunks` and store retrieval rank, reranker/hybrid scores, and source text/page snapshots. A future generation service must validate cited IDs against its retrieved candidate set before persistence; the model must never invent source metadata.
+
+M3A adds Alembic with a baseline migration containing the current M0-M2 schema and assessment tables. Startup `create_all()` remains temporarily compatible with existing tests and deployments. New databases should use `alembic upgrade head`; existing M0-M2 databases should be reviewed and then marked with `alembic stamp head`, which does not modify data.
+
+Batch persistence is designed as one transaction. Repository methods flush child records, while the batch method commits only after the run, questions, options, and citations are prepared successfully. Prompt/content versions and request/model metadata support later reproducibility; adaptive learning, sessions, scoring, authentication, and LLM question generation remain outside M3A.
+
+## M3B question generation engine
+
+M3B adds `AssessmentGenerationService` as the application use case. It accepts the existing M3A request schema, verifies an optional document is processed, calls the existing hybrid retrieval and reranking service, formats only application-owned chunk IDs and source text into a bounded prompt, and invokes structured generation through the existing `LLMProvider` capability. Gemini is the only configured adapter; future providers implement the same structured-generation method without changing the service.
+
+The structured output is parsed through strict Pydantic models. Deterministic validation requires exactly four unique options, one existing correct option key, non-empty content, citations, unique question stems, retrieved citation IDs, no citation markup, and no all/none-of-the-above options. Semantic distractor quality remains a model-quality concern and is not falsely treated as provable by deterministic checks. Valid citations are mapped to reranked results and persisted with source snapshots and retrieval metadata.
+
+M3B exposes `POST /questions/generate`, `GET /questions/{id}`, `GET /questions`, and `GET /question-generation-runs/{run_id}`. Generation responses are administrative/development responses and include the correct answer; a future learner-facing schema must omit it. The optional `scripts/smoke_questions.py` path uses configured Gemini settings and never prints credentials.

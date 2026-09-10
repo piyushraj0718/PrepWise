@@ -2,7 +2,7 @@
 
 ## Purpose
 
-PrepWise is planned as a GenAI-assisted application for learning and preparation. The repository currently contains only the engineering foundation; product workflows, user experience, data model, and AI capabilities have not been implemented or finalized.
+PrepWise is a GenAI-assisted application for learning and preparation. The repository now contains document ingestion, retrieval/RAG, the M3A assessment persistence foundation, and the M3B grounded MCQ generation engine; learner workflows remain a separate future slice.
 
 ## Product principles
 
@@ -12,9 +12,9 @@ PrepWise is planned as a GenAI-assisted application for learning and preparation
 - Protect user data and avoid placing secrets or sensitive data in source control.
 - Make it possible to swap or fake external services during testing.
 
-## Scope for the current setup milestone
+## Scope for the current project state
 
-This milestone establishes project guidance and architecture documentation only. It does not select a runtime framework, install dependencies, create application code, define production prompts, or implement PrepWise features.
+The current implementation uses FastAPI, SQLAlchemy, PostgreSQL configuration, local document storage, replaceable retrieval/reranking/LLM ports, and Alembic migrations. M3A defines persisted assessment runs, MCQ questions/options, citations with source snapshots, controlled learning metadata, and atomic batch boundaries. M3B adds grounded structured MCQ generation and administrative question APIs. Learner-facing answers, scoring, sessions, and adaptive selection remain out of scope.
 
 ## Open product questions
 
