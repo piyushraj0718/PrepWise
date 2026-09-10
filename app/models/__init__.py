@@ -2,6 +2,8 @@ from app.models.document import Document, DocumentChunk, DocumentEmbedding, Docu
 from app.models.assessment import (
     AssessmentGenerationRun,
     AssessmentQuestion,
+    AssessmentQuestionAttempt,
+    AssessmentQualityEvaluation,
     AssessmentQuestionCitation,
     AssessmentQuestionOption,
 )
@@ -13,6 +15,8 @@ __all__ = [
     "DocumentText",
     "AssessmentGenerationRun",
     "AssessmentQuestion",
+    "AssessmentQuestionAttempt",
+    "AssessmentQualityEvaluation",
     "AssessmentQuestionCitation",
     "AssessmentQuestionOption",
 ]

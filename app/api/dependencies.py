@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from app.ai.embeddings import SentenceTransformerEmbeddingProvider
 from app.ai.reranking import SentenceTransformerCrossEncoderReranker
 from app.ai.llm import GeminiLLMProvider
+from app.ai.assessment_evaluation import GeminiAssessmentQuestionEvaluator
 from app.core.config import get_settings
+from app.domain.assessment_semantic import SemanticQualityPolicy
 from app.db.session import get_db
 from app.repositories.documents import DocumentRepository
 from app.repositories.assessments import AssessmentRepository
@@ -98,6 +100,20 @@ def get_assessment_generation_service(
         provider=SentenceTransformerCrossEncoderReranker(
             settings.reranker_model_name),
     )
+    evaluator = None
+    if settings.assessment_semantic_evaluator_enabled:
+        evaluator = GeminiAssessmentQuestionEvaluator(
+            GeminiLLMProvider(
+                api_key=settings.gemini_api_key,
+                model_name=(
+                    settings.assessment_semantic_evaluator_model_name
+                    or settings.gemini_model_name
+                ),
+                timeout_seconds=settings.assessment_semantic_evaluator_timeout_seconds,
+                max_retries=settings.llm_max_retries,
+                retry_base_delay_seconds=settings.llm_retry_base_delay_seconds,
+            )
+        )
     return AssessmentGenerationService(
         repository=AssessmentRepository(db),
         reranking=reranking,
@@ -110,6 +126,11 @@ def get_assessment_generation_service(
         ),
         embedding_model_name=settings.embedding_model_name,
         reranker_model_name=settings.reranker_model_name,
+        evaluator=evaluator,
+        semantic_evaluation_enabled=settings.assessment_semantic_evaluator_enabled,
+        semantic_quality_policy=SemanticQualityPolicy(
+            settings.assessment_semantic_pass_threshold
+        ),
     )
 
 

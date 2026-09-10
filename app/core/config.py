@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     gemini_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
     llm_retry_base_delay_seconds: float = 0.5
+    assessment_semantic_evaluator_enabled: bool = False
+    assessment_semantic_evaluator_model_name: str | None = None
+    assessment_semantic_evaluator_timeout_seconds: float = 30.0
+    assessment_semantic_pass_threshold: float = 0.75
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore")

@@ -1,16 +1,34 @@
 import hashlib
 import json
-import re
+from dataclasses import replace
 from collections.abc import Sequence
 from typing import Any
+from uuid import uuid4
+
+from sqlalchemy.exc import IntegrityError
 
 from app.ai.assessment import AssessmentLLMProvider
+from app.ai.assessment_evaluation import (
+    AssessmentQuestionEvaluator,
+    SemanticEvaluationError,
+    TrustedEvaluationEvidence,
+)
 from app.ai.assessment_prompts import (
     ASSESSMENT_PROMPT_VERSION,
+    ASSESSMENT_EVALUATION_PROMPT_VERSION,
     build_assessment_prompt,
 )
 from app.ai.llm import LLMProviderError, LLMResponseError
 from app.domain.assessment import BloomLevel, QuestionType
+from app.domain.assessment_quality import (
+    AssessmentQualityResult,
+    AssessmentQualityValidator,
+    QualityFinding,
+    QualityDecision,
+    QuestionQualityResult,
+    RegenerationDecisionPolicy,
+)
+from app.domain.assessment_semantic import SemanticQualityPolicy
 from app.models.document import Document
 from app.repositories.assessments import AssessmentRepository
 from app.schemas.assessment_generation import GeneratedAssessment, GeneratedMCQ
@@ -32,6 +50,18 @@ class AssessmentGenerationError(RuntimeError):
 
 
 class AssessmentValidationError(AssessmentGenerationError):
+    def __init__(
+        self, message: str, quality_result: AssessmentQualityResult | None = None
+    ) -> None:
+        super().__init__(message)
+        self.quality_result = quality_result
+
+
+class AssessmentGenerationExhaustedError(AssessmentValidationError):
+    pass
+
+
+class AssessmentSemanticEvaluationError(AssessmentGenerationError):
     pass
 
 
@@ -44,13 +74,6 @@ class AssessmentPersistenceError(AssessmentGenerationError):
 
 
 class AssessmentGenerationService:
-    _MARKUP_PATTERN = re.compile(
-        r"(?:\[\s*\d+\s*\]|\[\s*chunk[_ -]?id\s*=|\bchunk[_ -]?id\s*[:=]|\bcitation\s*[:=])",
-        re.IGNORECASE,
-    )
-    _FORBIDDEN_OPTION_PATTERN = re.compile(
-        r"^(?:all|none)\s+of\s+the\s+above$", re.IGNORECASE)
-
     def __init__(
         self,
         repository: AssessmentRepository,
@@ -59,6 +82,11 @@ class AssessmentGenerationService:
         embedding_model_name: str,
         reranker_model_name: str,
         prompt_version: str = ASSESSMENT_PROMPT_VERSION,
+        quality_validator: AssessmentQualityValidator | None = None,
+        regeneration_policy: RegenerationDecisionPolicy | None = None,
+        evaluator: AssessmentQuestionEvaluator | None = None,
+        semantic_quality_policy: SemanticQualityPolicy | None = None,
+        semantic_evaluation_enabled: bool = False,
     ) -> None:
         self.repository = repository
         self.reranking = reranking
@@ -66,6 +94,13 @@ class AssessmentGenerationService:
         self.embedding_model_name = embedding_model_name
         self.reranker_model_name = reranker_model_name
         self.prompt_version = prompt_version
+        self.quality_validator = quality_validator or AssessmentQualityValidator()
+        self.regeneration_policy = regeneration_policy or RegenerationDecisionPolicy()
+        self.evaluator = evaluator
+        self.semantic_quality_policy = semantic_quality_policy or SemanticQualityPolicy()
+        self.semantic_evaluation_enabled = semantic_evaluation_enabled
+        if self.semantic_evaluation_enabled and self.evaluator is None:
+            raise ValueError("An evaluator is required when semantic evaluation is enabled")
 
     def generate(self, request: QuestionGenerationRequest) -> tuple[Any, list[Any]]:
         document_id = str(request.document_id) if request.document_id else None
@@ -86,6 +121,176 @@ class AssessmentGenerationService:
             raise AssessmentNoContextError(
                 "No relevant processed document context was found")
 
+        run_id = self._start_run(request, document_id)
+        accepted_questions: dict[int, GeneratedMCQ] = {}
+        accepted_attempt_ids: dict[int, str] = {}
+        failed_stems: list[str] = []
+        pending_slots = list(range(request.count))
+        attempt_numbers = {slot: 1 for slot in pending_slots}
+        last_quality_result: AssessmentQualityResult | None = None
+
+        try:
+            while pending_slots:
+                attempt_request = request.model_copy(
+                    update={"count": len(pending_slots)})
+                generated = self._generate_questions(
+                    attempt_request, candidates)
+                accepted_in_batch = [
+                    accepted_questions[slot]
+                    for slot in sorted(accepted_questions)
+                ]
+                combined_questions = accepted_in_batch + generated.questions
+                quality_result = self.quality_validator.validate(
+                    combined_questions,
+                    {candidate.chunk_id for candidate in candidates},
+                )
+                last_quality_result = quality_result
+                candidate_offset = len(accepted_in_batch)
+                next_pending: list[int] = []
+                exhausted_slots: list[int] = []
+                for index, slot in enumerate(pending_slots):
+                    question = generated.questions[index]
+                    result = quality_result.question_results[candidate_offset + index]
+                    semantic_result = None
+                    result = self._reject_previous_attempt_duplicate(
+                        result, question, failed_stems, index)
+                    if result.accepted and self.semantic_evaluation_enabled:
+                        try:
+                            semantic_result = self.evaluator.evaluate(  # type: ignore[union-attr]
+                                question,
+                                requested_difficulty=(
+                                    request.difficulty.value if request.difficulty else None
+                                ),
+                                requested_bloom_level=(
+                                    request.bloom_level.value if request.bloom_level else None
+                                ),
+                                requested_topic=request.query,
+                                requested_skill=request.skill,
+                                evidence=self._evaluation_evidence(question, candidates),
+                            )
+                        except Exception as error:
+                            attempt_id = self.repository.record_question_attempt(
+                                generation_run_id=run_id,
+                                question_slot=slot,
+                                attempt_number=attempt_numbers[slot],
+                                status="evaluation_failed",
+                                candidate_payload=question.model_dump(mode="json"),
+                                failure_reasons=["semantic_evaluation_unavailable"],
+                            )
+                            self._record_quality_evaluations(
+                                run_id, attempt_id, result, None, "evaluation_failed"
+                            )
+                            raise AssessmentSemanticEvaluationError(
+                                "Semantic evaluation could not be completed"
+                            ) from error
+                        if not self.semantic_quality_policy.passes(semantic_result):
+                            result = self._reject_semantic_quality(
+                                result, index)
+                    attempt_number = attempt_numbers[slot]
+                    decision = self.regeneration_policy.decide(
+                        result, attempt_number=attempt_number)
+                    if decision is QualityDecision.ACCEPT:
+                        attempt_id = self.repository.record_question_attempt(
+                            generation_run_id=run_id,
+                            question_slot=slot,
+                            attempt_number=attempt_number,
+                            status="accepted",
+                            candidate_payload=question.model_dump(mode="json"),
+                            failure_reasons=[],
+                        )
+                        accepted_questions[slot] = question
+                        accepted_attempt_ids[slot] = attempt_id
+                        self._record_quality_evaluations(
+                            run_id, attempt_id, result, semantic_result, "accepted"
+                        )
+                    else:
+                        failure_codes = self._failure_codes(result)
+                        failed_stems.append(question.stem)
+                        status = "exhausted" if decision is QualityDecision.REJECT else "rejected"
+                        attempt_id = self.repository.record_question_attempt(
+                            generation_run_id=run_id,
+                            question_slot=slot,
+                            attempt_number=attempt_number,
+                            status=status,
+                            candidate_payload=question.model_dump(mode="json"),
+                            failure_reasons=failure_codes,
+                        )
+                        self._record_quality_evaluations(
+                            run_id, attempt_id, result, semantic_result, status
+                        )
+                        if decision is QualityDecision.REGENERATE:
+                            attempt_numbers[slot] = attempt_number + 1
+                            next_pending.append(slot)
+                        else:
+                            exhausted_slots.append(slot)
+
+                pending_slots = next_pending
+                if exhausted_slots:
+                    self._mark_run_exhausted(
+                        run_id,
+                        "One or more question slots exhausted regeneration attempts",
+                    )
+                    failure_codes = sorted({
+                        finding.code for finding in quality_result.hard_failures
+                    })
+                    raise AssessmentGenerationExhaustedError(
+                        "Assessment generation exhausted after bounded attempts: "
+                        + ", ".join(failure_codes),
+                        quality_result=quality_result,
+                    )
+                if not pending_slots:
+                    break
+
+            run_values = self._run_values(
+                request, document_id, status="completed")
+            question_values = [
+                self._question_values(
+                    accepted_questions[slot], request, candidates)
+                for slot in sorted(accepted_questions)
+            ]
+            try:
+                return self.repository.create_generation_batch(
+                    run_values,
+                    question_values,
+                    existing_run_id=run_id,
+                    accepted_attempt_ids=[
+                        accepted_attempt_ids[slot]
+                        for slot in sorted(accepted_attempt_ids)
+                    ],
+                )
+            except Exception as error:
+                raise AssessmentPersistenceError(
+                    "The generated assessment could not be persisted") from error
+        except (LLMProviderError, LLMResponseError):
+            self._mark_run_failed(run_id, "LLM generation failed")
+            raise
+        except AssessmentGenerationExhaustedError:
+            raise
+        except AssessmentSemanticEvaluationError:
+            self._mark_run_failed(run_id, "Semantic evaluation failed")
+            raise
+        except AssessmentValidationError:
+            self._mark_run_failed(
+                run_id, "Structured generation validation failed")
+            raise
+        except AssessmentPersistenceError:
+            self._mark_run_failed(run_id, "Assessment persistence failed")
+            raise
+        except Exception as error:
+            self._mark_run_failed(run_id, "Assessment generation exhausted")
+            if last_quality_result is not None:
+                raise AssessmentValidationError(
+                    "Assessment generation exhausted after bounded attempts",
+                    quality_result=last_quality_result,
+                ) from error
+            raise AssessmentPersistenceError(
+                "The generated assessment could not be persisted") from error
+
+    def _generate_questions(
+        self,
+        request: QuestionGenerationRequest,
+        candidates: Sequence[RerankedResult],
+    ) -> GeneratedAssessment:
         prompt = build_assessment_prompt(
             request.query,
             self._build_context(candidates),
@@ -102,20 +307,146 @@ class AssessmentGenerationService:
         except Exception as error:
             raise LLMProviderError(
                 "The assessment LLM provider failed") from error
-
         generated = self._parse_output(raw_output)
         self._validate_batch(generated, request, candidates)
-        run_values = self._run_values(request, document_id)
-        question_values = [
-            self._question_values(question, request, candidates)
-            for question in generated.questions
-        ]
+        return generated
+
+    def _start_run(self, request: QuestionGenerationRequest, document_id: str | None) -> str:
         try:
-            return self.repository.create_generation_batch(
-                run_values, question_values)
+            run_values = self._run_values(
+                request, document_id, status="generating")
+            return self.repository.start_generation_run(**run_values)
+        except IntegrityError:
+            run_values["request_fingerprint"] = (
+                f"{run_values['request_fingerprint'][:95]}-{uuid4().hex}"
+            )
+            try:
+                return self.repository.start_generation_run(**run_values)
+            except Exception as error:
+                raise AssessmentPersistenceError(
+                    "The generation run could not be started") from error
         except Exception as error:
             raise AssessmentPersistenceError(
-                "The generated assessment could not be persisted") from error
+                "The generation run could not be started") from error
+
+    def _mark_run_failed(self, run_id: str, reason: str) -> None:
+        try:
+            self.repository.update_generation_run(
+                run_id, status="failed", failure_reason=reason)
+        except Exception:
+            pass
+
+    def _mark_run_exhausted(self, run_id: str, reason: str) -> None:
+        try:
+            self.repository.update_generation_run(
+                run_id, status="exhausted", failure_reason=reason)
+        except Exception:
+            pass
+
+    def _reject_previous_attempt_duplicate(
+        self,
+        result: QuestionQualityResult,
+        question: GeneratedMCQ,
+        failed_stems: Sequence[str],
+        question_index: int,
+    ) -> QuestionQualityResult:
+        if not any(
+            self.quality_validator.stems_conflict(question.stem, stem)
+            for stem in failed_stems
+        ):
+            return result
+        finding = QualityFinding(
+            "duplicate_previous_attempt",
+            "The question repeats a previously failed attempt",
+            question_index,
+        )
+        return replace(
+            result,
+            accepted=False,
+            hard_failures=[*result.hard_failures, finding],
+            deterministic_score=max(0.0, result.deterministic_score - 0.2),
+            decision=QualityDecision.REGENERATE,
+        )
+
+    @staticmethod
+    def _reject_semantic_quality(
+        result: QuestionQualityResult, question_index: int
+    ) -> QuestionQualityResult:
+        finding = QualityFinding(
+            "semantic_quality_below_threshold",
+            "The semantic evaluator did not recommend this question for acceptance",
+            question_index,
+        )
+        return replace(
+            result,
+            accepted=False,
+            hard_failures=[*result.hard_failures, finding],
+            decision=QualityDecision.REGENERATE,
+        )
+
+    @staticmethod
+    def _evaluation_evidence(
+        question: GeneratedMCQ,
+        candidates: Sequence[RerankedResult],
+    ) -> list[TrustedEvaluationEvidence]:
+        candidates_by_id = {candidate.chunk_id: candidate for candidate in candidates}
+        evidence: list[TrustedEvaluationEvidence] = []
+        remaining_characters = 8_000
+        for chunk_id in question.cited_chunk_ids[:4]:
+            candidate = candidates_by_id[chunk_id]
+            if remaining_characters <= 0:
+                break
+            text = candidate.chunk_text[:remaining_characters]
+            evidence.append(TrustedEvaluationEvidence(chunk_id=chunk_id, chunk_text=text))
+            remaining_characters -= len(text)
+        return evidence
+
+    @staticmethod
+    def _failure_codes(result: QuestionQualityResult) -> list[str]:
+        codes = [finding.code for finding in result.hard_failures]
+        if not codes and not result.accepted:
+            codes.append("deterministic_score_below_threshold")
+        return sorted(set(codes))
+
+    def _record_quality_evaluations(
+        self,
+        run_id: str,
+        attempt_id: str,
+        deterministic_result: QuestionQualityResult,
+        semantic_result: Any | None,
+        attempt_status: str,
+    ) -> None:
+        self.repository.record_quality_evaluation(
+            generation_run_id=run_id,
+            question_attempt_id=attempt_id,
+            evaluation_type="deterministic",
+            evaluator_provider=None,
+            evaluator_model=None,
+            prompt_version=None,
+            overall_score=deterministic_result.deterministic_score,
+            dimension_scores={"hard_failure_codes": self._failure_codes(deterministic_result)},
+            recommendation="pass" if deterministic_result.accepted else "fail",
+            rationale="Deterministic structural and provenance validation",
+            status=attempt_status,
+        )
+        if semantic_result is None:
+            return
+        self.repository.record_quality_evaluation(
+            generation_run_id=run_id,
+            question_attempt_id=attempt_id,
+            evaluation_type="semantic",
+            evaluator_provider="gemini" if self.evaluator else None,
+            evaluator_model=getattr(self.evaluator, "model_name", None),
+            prompt_version=ASSESSMENT_EVALUATION_PROMPT_VERSION,
+            overall_score=semantic_result.overall_score,
+            dimension_scores={
+                name: getattr(semantic_result, name).score
+                for name in ("groundedness", "correctness", "distractor_quality", "explanation_quality", "difficulty_alignment", "bloom_alignment")
+            },
+            recommendation=semantic_result.recommendation,
+            rationale=semantic_result.rationale,
+            status=attempt_status,
+        )
 
     def _validate_document(self, document_id: str | None) -> None:
         if document_id is None:
@@ -202,14 +533,7 @@ class AssessmentGenerationService:
             raise AssessmentValidationError(
                 "The LLM returned an unexpected question count")
         candidate_ids = {candidate.chunk_id for candidate in candidates}
-        stems: set[str] = set()
         for question in assessment.questions:
-            normalized_stem = " ".join(question.stem.casefold().split())
-            if normalized_stem in stems:
-                raise AssessmentValidationError(
-                    "Generated question stems must be unique")
-            stems.add(normalized_stem)
-            self._validate_text(question)
             if request.difficulty and question.difficulty != request.difficulty:
                 raise AssessmentValidationError(
                     "Generated difficulty does not match the request")
@@ -223,20 +547,12 @@ class AssessmentGenerationService:
                 raise AssessmentValidationError(
                     "The LLM cited a chunk that was not retrieved")
 
-    def _validate_text(self, question: GeneratedMCQ) -> None:
-        values = [question.stem, question.explanation,
-                  question.topic, question.skill]
-        values.extend(option.option_text for option in question.options)
-        if any(self._MARKUP_PATTERN.search(value) for value in values):
-            raise AssessmentValidationError(
-                "Generated question content must not contain citation markup")
-        if any(self._FORBIDDEN_OPTION_PATTERN.match(option.option_text.strip())
-               for option in question.options):
-            raise AssessmentValidationError(
-                "Generated options must not use all/none of the above")
-
     def _run_values(
-        self, request: QuestionGenerationRequest, document_id: str | None
+        self,
+        request: QuestionGenerationRequest,
+        document_id: str | None,
+        *,
+        status: str = "completed",
     ) -> dict[str, object]:
         request_data = request.model_dump(mode="json")
         fingerprint = hashlib.sha256(
@@ -258,7 +574,7 @@ class AssessmentGenerationService:
             "llm_model_name": self.provider.model_name,
             "prompt_version": self.prompt_version,
             "seed": request.seed,
-            "status": "completed",
+            "status": status,
         }
 
     @staticmethod

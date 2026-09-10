@@ -316,3 +316,89 @@ Implement bounded exponential retry handling inside `GeminiLLMProvider`. Retry H
 ### Consequences
 
 Both `/ask` and structured M3B generation inherit the same provider resilience without changing their abstractions. A request can take longer than one timeout because each bounded attempt has its own timeout plus backoff delay; the default is two retries with 0.5 and 1.0 second delays.
+
+## ADR-016: Add deterministic assessment quality as the M3C-1 authority boundary
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M3B validates structured MCQ shape and trusted citation membership, but it does not provide batch duplicate detection, transparent quality findings, or a deterministic score before persistence.
+
+### Decision
+
+Add a standalone deterministic assessment quality validator after structured parsing and citation validation and before repository persistence. It validates structural completeness, normalized option uniqueness, citation trust, forbidden patterns, and exact/near-duplicate stems. It returns structured hard failures, warnings, deterministic scores, and a decision. Add a bounded `RegenerationDecisionPolicy` abstraction, but do not invoke regeneration or another LLM call in M3C-1.
+
+### Rationale
+
+Deterministic rules must remain authoritative for malformed or untrusted assessment content. Keeping this layer independent of Gemini, retrieval, routes, and SQLAlchemy makes it testable and prevents a future semantic evaluator from silently becoming the source of truth.
+
+### Consequences
+
+No schema changes are needed for M3C-1 because quality results are internal and accepted questions continue using the existing atomic persistence path. The score measures only deterministic structural/provenance completeness, not semantic correctness. LLM evaluation, attempt tracking, regeneration loops, quality persistence, and advanced coverage/diversity are deferred to later M3C stages.
+
+## ADR-017: Persist bounded per-slot regeneration attempts
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M3C-2 must recover from individual deterministic quality failures without discarding valid questions or allowing unbounded LLM calls.
+
+### Decision
+
+Create an `assessment_question_attempts` audit record for every generated candidate, uniquely keyed by generation run, question slot, and attempt number. Reuse `RegenerationDecisionPolicy` to bound regeneration per slot. Persist accepted questions only after every slot passes M3C-1, in the existing final batch transaction; link accepted attempt records to those questions within that transaction.
+
+### Rationale
+
+Per-slot records preserve rejected candidates and deterministic failure codes while partial regeneration avoids replacing already accepted questions. Keeping the final assessment batch atomic prevents an exhausted run from appearing as a successful partial assessment.
+
+### Consequences
+
+Attempt records and failed/exhausted runs intentionally persist for auditability, even though their final questions do not. Generation remains synchronous and uses the existing provider retry behavior; quality dashboards remain out of scope.
+
+## ADR-018: Use optional secondary semantic evaluation after deterministic validation
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M3C-1 can prove structural and provenance properties but cannot reliably judge whether source evidence supports a selected answer, distractors are plausible, or a question matches intended cognitive difficulty.
+
+### Decision
+
+Add a replaceable evaluator protocol with a Gemini structured-output adapter, disabled by default. Evaluate only candidates that have passed M3C-1, using bounded text from application-owned cited chunks. Require a strict evaluator schema, a `pass` recommendation, and a configurable overall-score threshold before the existing M3C-2 decision path accepts a candidate.
+
+### Rationale
+
+This adds a useful secondary quality signal without making an LLM the source of truth for deterministic rules or source metadata. Reusing the existing provider transport retains one bounded retry implementation.
+
+### Consequences
+
+Semantic rejection uses the existing bounded per-slot regeneration policy. Evaluator errors fail safely and retain an audit attempt, while durable evaluator-result history and quality APIs are deliberately deferred to M3C-4.
+
+## ADR-019: Persist assessment quality evaluations and expose read APIs
+
+- Status: Accepted
+- Date: 2026-09-10
+
+### Context
+
+M3C-3 introduced optional semantic evaluation but kept evaluation results in memory only. Operators and tests need durable history tied to generation attempts without changing M3C-1 authority or M3C-2 regeneration behavior.
+
+### Decision
+
+Add immutable `assessment_quality_evaluations` rows keyed to generation runs and question attempts, with at most one deterministic and one semantic record per attempt. Persist evaluations during generation using the same independent-commit audit pattern as attempt records. Link accepted evaluation rows to final questions inside the existing final batch transaction. Expose administrative read APIs for question-scoped and run-scoped history.
+
+When semantic evaluation fails after deterministic validation, persist the deterministic evaluation with status `evaluation_failed` before failing the run.
+
+### Rationale
+
+This completes the M3C audit trail without making stored scores authoritative for acceptance. Separate read APIs keep existing generation and question responses unchanged while making evaluation history inspectable.
+
+### Consequences
+
+Evaluation records may exist for runs that never produce final questions. Deterministic records store hard-failure codes rather than full warning lists, and semantic records store dimension scores rather than per-dimension reasons. Quality dashboards, coverage/diversity analysis, and learner-facing workflows remain out of scope.

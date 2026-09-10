@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -41,6 +41,12 @@ class AssessmentGenerationRun(Base):
     questions: Mapped[list["AssessmentQuestion"]] = relationship(
         back_populates="generation_run", cascade="all, delete-orphan"
     )
+    attempts: Mapped[list["AssessmentQuestionAttempt"]] = relationship(
+        back_populates="generation_run", cascade="all, delete-orphan"
+    )
+    quality_evaluations: Mapped[list["AssessmentQualityEvaluation"]] = relationship(
+        back_populates="generation_run", cascade="all, delete-orphan"
+    )
 
 
 class AssessmentQuestion(Base):
@@ -75,6 +81,79 @@ class AssessmentQuestion(Base):
     citations: Mapped[list["AssessmentQuestionCitation"]] = relationship(
         back_populates="question", cascade="all, delete-orphan", order_by="AssessmentQuestionCitation.citation_order"
     )
+    quality_evaluations: Mapped[list["AssessmentQualityEvaluation"]] = relationship(
+        back_populates="question"
+    )
+
+
+class AssessmentQuestionAttempt(Base):
+    __tablename__ = "assessment_question_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "generation_run_id",
+            "question_slot",
+            "attempt_number",
+            name="uq_assessment_question_attempt",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4()))
+    generation_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assessment_generation_runs.id"),
+        nullable=False, index=True
+    )
+    question_slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    candidate_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    failure_reasons: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    accepted_question_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("assessment_questions.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    generation_run: Mapped[AssessmentGenerationRun] = relationship(
+        back_populates="attempts")
+    accepted_question: Mapped["AssessmentQuestion | None"] = relationship(
+        foreign_keys=[accepted_question_id])
+    quality_evaluations: Mapped[list["AssessmentQualityEvaluation"]] = relationship(
+        back_populates="attempt", cascade="all, delete-orphan"
+    )
+
+
+class AssessmentQualityEvaluation(Base):
+    __tablename__ = "assessment_quality_evaluations"
+    __table_args__ = (
+        UniqueConstraint("question_attempt_id", "evaluation_type", name="uq_attempt_quality_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    generation_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assessment_generation_runs.id"), nullable=False, index=True
+    )
+    question_attempt_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assessment_question_attempts.id"), nullable=False, index=True
+    )
+    question_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("assessment_questions.id"), nullable=True, index=True
+    )
+    evaluation_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    evaluator_provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    evaluator_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    overall_score: Mapped[float | None] = mapped_column(nullable=True)
+    dimension_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    recommendation: Mapped[str] = mapped_column(String(20), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    generation_run: Mapped[AssessmentGenerationRun] = relationship(back_populates="quality_evaluations")
+    attempt: Mapped[AssessmentQuestionAttempt] = relationship(back_populates="quality_evaluations")
+    question: Mapped["AssessmentQuestion | None"] = relationship(back_populates="quality_evaluations")
 
 
 class AssessmentQuestionOption(Base):

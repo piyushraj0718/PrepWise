@@ -91,3 +91,50 @@ M3B adds `AssessmentGenerationService` as the application use case. It accepts t
 The structured output is parsed through strict Pydantic models. Deterministic validation requires exactly four unique options, one existing correct option key, non-empty content, citations, unique question stems, retrieved citation IDs, no citation markup, and no all/none-of-the-above options. Semantic distractor quality remains a model-quality concern and is not falsely treated as provable by deterministic checks. Valid citations are mapped to reranked results and persisted with source snapshots and retrieval metadata.
 
 M3B exposes `POST /questions/generate`, `GET /questions/{id}`, `GET /questions`, and `GET /question-generation-runs/{run_id}`. Generation responses are administrative/development responses and include the correct answer; a future learner-facing schema must omit it. The optional `scripts/smoke_questions.py` path uses configured Gemini settings and never prints credentials.
+
+## M3C-1 deterministic assessment quality
+
+M3C-1 adds a provider-independent deterministic quality boundary after M3B structured parsing and citation membership validation, before question values are passed to the atomic assessment repository. The quality layer receives generated MCQs and the application-owned retrieved chunk ID set; it does not call Gemini, retrieval, reranking, FastAPI, or SQLAlchemy.
+
+Hard failures are authoritative and prevent persistence: invalid option count, missing/duplicate content, invalid correct key, invalid difficulty/Bloom values, invalid or duplicate citations, citation markup, forbidden all/none-of-the-above options, and duplicate or near-duplicate batch stems. Warnings are advisory only, such as unusually short but non-empty text. Semantic correctness, distractor quality, explanation entailment, and actual difficulty/Bloom fit are deliberately not evaluated in this stage.
+
+Comparison normalization case-folds text, replaces punctuation with spaces, and collapses whitespace without changing stored question text. Near-duplicates use `difflib.SequenceMatcher` with an explicit configurable threshold, default `0.92`. The deterministic score is a structural completeness score only:
+
+```text
+score = structure * 0.25
+     + citations * 0.20
+     + option_uniqueness * 0.20
+     + explanation_presence * 0.15
+     + batch_uniqueness * 0.20
+```
+
+The score must not be interpreted as semantic or educational correctness. M3C-1 introduced `RegenerationDecisionPolicy`; M3C-2 now uses that policy for bounded partial regeneration.
+
+## M3C-2 attempt tracking and bounded partial regeneration
+
+M3C-2 creates a generation run before LLM calls and records every candidate in `assessment_question_attempts`. An attempt is uniquely identified by generation run, question slot, and attempt number. It retains the candidate payload, deterministic M3C-1 failure codes, a decision status (`accepted`, `rejected`, or `exhausted`), and, for accepted candidates, a link to the final persisted question.
+
+After each LLM response, M3C-1 validates the new candidates together with questions already accepted for the batch. Only rejected slots are requested again; accepted slots remain unchanged. Duplicate and near-duplicate checks therefore cover accepted candidates, siblings in the current response, and previously rejected candidate stems. `RegenerationDecisionPolicy.max_attempts` bounds calls per slot and makes exhaustion deterministic.
+
+Attempt records and failed/exhausted runs commit independently for auditability. Final questions, options, citations, completed-run status, and accepted-attempt links are committed in one existing repository transaction only after every slot is accepted. An exhausted run has no final assessment questions and cannot appear as a successful partial assessment. Provider transport retries remain inside the existing LLM adapter; M3C-2 adds no second retry mechanism.
+
+## M3C-3 secondary semantic evaluation
+
+M3C-3 adds an optional `AssessmentQuestionEvaluator` port. Its initial Gemini adapter reuses the existing structured-provider transport and retry behavior but has a dedicated, versioned evaluation prompt and strict Pydantic result schema. It receives only generated MCQ content, requested constraints, and bounded application-owned text from that question's validated cited chunks; it does not retrieve independently or control citation identity/metadata.
+
+Semantic scores are advisory rather than objective. `SemanticQualityPolicy` requires the evaluator's `pass` recommendation plus the explicit configurable threshold (default `0.75`) for the overall score and every semantic dimension. M3C-1 deterministic hard failures are checked first and always skip evaluator calls. A semantic failure becomes a normal M3C-2 regeneration candidate, so the same per-slot maximum applies. An evaluator failure, malformed result, or unavailable provider records an `evaluation_failed` audit attempt and fails the run; it can never silently accept a question.
+
+## M3C-4 durable quality evaluation history and read APIs
+
+M3C-4 persists immutable quality evaluation records in `assessment_quality_evaluations`, keyed to generation runs and question attempts. Each attempt may have at most one deterministic record and one semantic record. Records commit independently during generation, matching the M3C-2 audit pattern.
+
+Deterministic records store the M3C-1 score, hard-failure codes, recommendation, and attempt status. Semantic records store evaluator provider/model metadata, prompt version, overall and dimension scores, recommendation, rationale, and attempt status. Accepted attempts link their evaluation records to the final persisted question during the existing final batch transaction; rejected, exhausted, and evaluation-failed attempts keep `question_id` null.
+
+When semantic evaluation is enabled but the evaluator fails after deterministic validation, the service still persists the deterministic evaluation with status `evaluation_failed` before failing the run. Semantic evaluation remains disabled by default.
+
+Administrative read APIs expose the stored history without changing generation behavior:
+
+- `GET /questions/{question_id}/quality`
+- `GET /question-generation-runs/{run_id}/quality`
+
+Topic coverage, advanced diversity, learner workflows, and quality dashboards remain out of scope.

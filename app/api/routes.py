@@ -29,6 +29,8 @@ from app.schemas.documents import (
 from app.schemas.assessment_generation import QuestionGenerationResponse
 from app.schemas.assessments import (
     GenerationRunResponse,
+    QualityEvaluationListResponse,
+    QualityEvaluationResponse,
     QuestionGenerationRequest,
     QuestionListResponse,
     QuestionResponse,
@@ -437,3 +439,47 @@ def get_generation_run(
             detail="Question generation run was not found",
         )
     return GenerationRunResponse.model_validate(run)
+
+
+@router.get(
+    "/questions/{question_id}/quality",
+    response_model=QualityEvaluationListResponse,
+)
+def get_question_quality(
+    question_id: str,
+    repository: AssessmentRepository = Depends(get_assessment_repository),
+) -> QualityEvaluationListResponse:
+    question = repository.get_question(question_id)
+    if question is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question was not found",
+        )
+    evaluations = repository.get_question_quality(question_id)
+    return QualityEvaluationListResponse(
+        evaluations=[
+            QualityEvaluationResponse.model_validate(item) for item in evaluations
+        ],
+    )
+
+
+@router.get(
+    "/question-generation-runs/{run_id}/quality",
+    response_model=QualityEvaluationListResponse,
+)
+def get_generation_run_quality(
+    run_id: str,
+    repository: AssessmentRepository = Depends(get_assessment_repository),
+) -> QualityEvaluationListResponse:
+    run = repository.get_generation_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question generation run was not found",
+        )
+    evaluations = repository.get_run_quality(run_id)
+    return QualityEvaluationListResponse(
+        evaluations=[
+            QualityEvaluationResponse.model_validate(item) for item in evaluations
+        ],
+    )

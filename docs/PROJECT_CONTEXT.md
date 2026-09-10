@@ -14,7 +14,7 @@ PrepWise is a GenAI-assisted application for learning and preparation. The repos
 
 ## Scope for the current project state
 
-The current implementation uses FastAPI, SQLAlchemy, PostgreSQL configuration, local document storage, replaceable retrieval/reranking/LLM ports, and Alembic migrations. M3A defines persisted assessment runs, MCQ questions/options, citations with source snapshots, controlled learning metadata, and atomic batch boundaries. M3B adds grounded structured MCQ generation and administrative question APIs. Learner-facing answers, scoring, sessions, and adaptive selection remain out of scope.
+The current implementation uses FastAPI, SQLAlchemy, PostgreSQL configuration, local document storage, replaceable retrieval/reranking/LLM ports, and Alembic migrations. M3A defines persisted assessment runs, MCQ questions/options, citations with source snapshots, controlled learning metadata, and atomic batch boundaries. M3B adds grounded structured MCQ generation and administrative question APIs. M3C adds an authoritative deterministic quality gate, audited per-slot attempts, bounded partial regeneration, and an optional secondary semantic evaluator before final persistence. Durable evaluation history, learner-facing answers, scoring, sessions, and adaptive selection remain out of scope.
 
 ## Open product questions
 

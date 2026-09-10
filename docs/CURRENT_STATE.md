@@ -100,8 +100,41 @@ Last reviewed: 2026-09-10
 - Added an optional Gemini smoke script at `scripts/smoke_questions.py`; ordinary tests use fake providers and remain offline.
 - Added bounded Gemini retries for transient rate-limit, server, and connection failures with environment-backed settings; permanent errors are not retried.
 
+## Completed in Milestone 3C-1: Deterministic Assessment Quality
+
+- Added authoritative deterministic MCQ quality results for question and batch validation before persistence.
+- Added normalized option/stem comparison, configurable near-duplicate detection, structured failure findings, warnings, and transparent deterministic scoring.
+- Added a tested accept/regenerate/reject decision policy without regeneration loops or additional LLM calls.
+- Preserved application-owned citation validation and atomic M3B persistence; no database schema changes were required.
+- Semantic evaluation, quality persistence, topic coverage, advanced diversity, and regeneration attempts remain out of scope.
+
+## Completed in Milestone 3C-2: Bounded Question Regeneration
+
+- Added persistent, per-slot attempt records containing the attempt number, decision status, structured candidate payload, deterministic failure codes, and an optional link to the final accepted question.
+- Generation creates a run in `generating` status before calls to the LLM. M3C-1 remains the authoritative quality gate for every candidate.
+- Only slots rejected by M3C-1 are regenerated. Accepted slots are retained and included in duplicate checks for later candidates.
+- Regeneration is controlled solely by `RegenerationDecisionPolicy` and its configured maximum attempts. Exhaustion leaves no final assessment questions, marks the run `exhausted`, and retains the complete audit trail.
+- Existing M3B API routes and successful response schemas remain unchanged.
+
+## Completed in Milestone 3C-3: Secondary Semantic Evaluation
+
+- Added an optional `AssessmentQuestionEvaluator` protocol and Gemini implementation with strict structured Pydantic output for groundedness, correctness, distractors, explanation, difficulty, Bloom alignment, and an overall recommendation.
+- M3C-1 remains authoritative: deterministic failures skip semantic evaluation entirely. Only deterministic candidates receive bounded, application-owned cited-chunk evidence for semantic review.
+- Semantic recommendation plus a configurable threshold determines whether a deterministic candidate is accepted or returns to the existing M3C-2 per-slot regeneration policy.
+- Malformed, unavailable, or failed evaluator responses never accept a question. They create an `evaluation_failed` attempt and fail the generation run without persisting final questions.
+- Semantic evaluation is disabled by default and configured through environment-backed evaluator enablement, model, timeout, and threshold settings.
+- Added optional manual `scripts/smoke_semantic_evaluation.py`; it requires a configured Gemini key and explicitly enabled evaluator, and is not part of pytest.
+
+## Completed in Milestone 3C-4: Quality Evaluation History and Read APIs
+
+- Added persistent `assessment_quality_evaluations` records for deterministic and optional semantic evaluation outcomes tied to generation runs and question attempts.
+- Generation writes one deterministic evaluation per attempt and, when semantic evaluation is enabled, one semantic evaluation per evaluated attempt. Accepted attempts link evaluation records to final questions during the existing batch transaction.
+- Evaluator failures after deterministic validation persist the deterministic evaluation with status `evaluation_failed` before failing the run.
+- Added administrative read APIs at `GET /questions/{question_id}/quality` and `GET /question-generation-runs/{run_id}/quality`.
+- Added Alembic migration `0003_assessment_quality_evaluations.py` and focused persistence/API tests.
+
 ## Known constraints and next inputs
 
 To run locally: create a PostgreSQL database, copy `.env.example` to `.env` and set `DATABASE_URL`, install `requirements.txt`, then run `uvicorn app.main:app --reload`. The first use of the default embedding provider downloads `all-MiniLM-L6-v2` through `sentence-transformers`; subsequent uses use the local cache. Tables are created at application startup for this foundation milestone.
 
-The next milestone should define learner-facing assessment workflows. Correct answers are currently included in the administrative generation response; answer submission, scoring, quiz sessions, adaptive selection, and authentication are not implemented.
+The next milestone should define the next approved assessment-quality capability. Correct answers are currently included in the administrative generation response; answer submission, scoring, quiz sessions, adaptive selection, and authentication are not implemented.

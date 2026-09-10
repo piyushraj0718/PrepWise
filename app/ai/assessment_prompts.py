@@ -1,4 +1,5 @@
 ASSESSMENT_PROMPT_VERSION = "mcq-grounded-v1"
+ASSESSMENT_EVALUATION_PROMPT_VERSION = "mcq-semantic-evaluation-v1"
 
 ASSESSMENT_SYSTEM_PROMPT = """You generate grounded multiple-choice questions from supplied source context.
 Use only the supplied source context. Do not use outside knowledge or invent facts.
@@ -28,4 +29,30 @@ def build_assessment_prompt(
         "Supplied source context:\n"
         f"{context}\n\n"
         f"Topic or query: {query}"
+    )
+
+
+def build_assessment_evaluation_prompt(
+    *,
+    question: dict[str, object],
+    requested_difficulty: str | None,
+    requested_bloom_level: str | None,
+    requested_topic: str | None,
+    requested_skill: str | None,
+    evidence: list[dict[str, str]],
+) -> str:
+    """Build a bounded, evidence-only semantic evaluation prompt."""
+    return (
+        "Evaluate this generated MCQ using only the supplied trusted evidence. "
+        "Do not use outside knowledge and do not invent or return citation IDs. "
+        "Score each dimension from 0.0 to 1.0 and provide concise reasons. "
+        "For groundedness and correctness, judge whether evidence supports the stem and "
+        "selected answer. For distractors, check plausibility and whether they are clearly "
+        "incorrect. Judge explanation, requested difficulty, and requested Bloom level only "
+        "from the supplied material. Return pass only when the overall assessment supports it.\n\n"
+        f"Requested constraints: difficulty={requested_difficulty or 'unspecified'}; "
+        f"Bloom={requested_bloom_level or 'unspecified'}; "
+        f"topic={requested_topic or 'unspecified'}; skill={requested_skill or 'unspecified'}\n\n"
+        f"Generated question: {question}\n\n"
+        f"Trusted evidence: {evidence}"
     )

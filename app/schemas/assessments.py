@@ -110,3 +110,24 @@ class QuestionListResponse(AssessmentSchema):
     questions: list[QuestionResponse]
     limit: int
     offset: int
+
+
+class QualityEvaluationResponse(AssessmentSchema):
+    id: str
+    generation_run_id: str
+    question_attempt_id: str
+    question_id: str | None = None
+    evaluation_type: str
+    evaluator_provider: str | None = None
+    evaluator_model: str | None = None
+    prompt_version: str | None = None
+    overall_score: float | None = None
+    dimension_scores: dict[str, object] | None = None
+    recommendation: str
+    rationale: str
+    status: str
+    created_at: datetime
+
+
+class QualityEvaluationListResponse(AssessmentSchema):
+    evaluations: list[QualityEvaluationResponse]

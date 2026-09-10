@@ -9,6 +9,7 @@ from app.api.dependencies import (
     get_assessment_generation_service,
     get_assessment_repository,
 )
+from app.models.assessment import AssessmentQuestion
 from app.models.document import Document, DocumentChunk
 from app.repositories.assessments import AssessmentRepository
 from app.schemas.assessment_generation import GeneratedMCQ
@@ -282,6 +283,22 @@ def test_invalid_generated_question_is_rejected(session_factory, mutation) -> No
 
     with pytest.raises(AssessmentValidationError):
         service.generate(QuestionGenerationRequest(**request(document_id)))
+
+
+def test_quality_invalid_question_is_not_persisted(session_factory) -> None:
+    document_id, chunk_id = make_source(session_factory)
+    question = valid_question(chunk_id)
+    question["options"][1]["option_text"] = "An index"
+    service = make_service(
+        session_factory, document_id, chunk_id, {"questions": [question]}
+    )
+
+    with pytest.raises(AssessmentValidationError) as error:
+        service.generate(QuestionGenerationRequest(**request(document_id)))
+
+    assert "duplicate_option_text" in str(error.value)
+    with session_factory() as session:
+        assert session.query(AssessmentQuestion).count() == 0
 
 
 def test_duplicate_question_stems_are_rejected(session_factory) -> None:
